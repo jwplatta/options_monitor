@@ -14,3 +14,5 @@ htmlcov/
 .DS_Store
 .claude/settings.local.json
 .claude/worktrees/
+.gemini/tool-log.txt
+.gemini/skills
