@@ -9,6 +9,7 @@ import pytest
 
 from trade_dash.data.options import (
     _parse_filename,
+    find_all_snapshots_for_expiry,
     find_latest_snapshots,
     list_expirations,
     load_options_snapshot,
@@ -47,16 +48,22 @@ def test_parse_filename_bad_date(tmp_path: Path) -> None:
 
 
 def _touch(directory: Path, name: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
     p = directory / name
     p.touch()
     return p
 
 
+def _snapshot_dir(root: Path, folder_date: date) -> Path:
+    return root / f"{folder_date:%Y}" / f"{folder_date:%m}" / f"{folder_date:%d}"
+
+
 def test_find_latest_snapshots_picks_most_recent(tmp_path: Path) -> None:
     """When three snapshots exist for the same expiry, only the latest is returned."""
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_12-00-00.csv")
-    latest = _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_15-30-00.csv")
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_12-00-00.csv")
+    latest = _touch(folder, "SPXW_exp2026-04-15_2026-04-15_15-30-00.csv")
 
     result = find_latest_snapshots(
         "SPXW",
@@ -73,10 +80,11 @@ def test_find_latest_snapshots_picks_most_recent(tmp_path: Path) -> None:
 def test_find_latest_snapshots_returns_one_per_expiry(tmp_path: Path) -> None:
     """Multiple files per expiry → exactly one path per expiry date in output."""
     # Two expirations, two snapshots each
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-14_10-00-00.csv")
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-14_14-00-00.csv")
-    _touch(tmp_path, "SPXW_exp2026-04-16_2026-04-14_10-00-00.csv")
-    latest_16 = _touch(tmp_path, "SPXW_exp2026-04-16_2026-04-14_16-00-00.csv")
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 14))
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-14_10-00-00.csv")
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-14_14-00-00.csv")
+    _touch(folder, "SPXW_exp2026-04-16_2026-04-14_10-00-00.csv")
+    latest_16 = _touch(folder, "SPXW_exp2026-04-16_2026-04-14_16-00-00.csv")
 
     result = find_latest_snapshots(
         "SPXW",
@@ -92,10 +100,11 @@ def test_find_latest_snapshots_returns_one_per_expiry(tmp_path: Path) -> None:
 
 def test_find_latest_snapshots_all_expirations_in_window(tmp_path: Path) -> None:
     """All distinct expiry dates within [start, start+days_out] are included."""
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 14))
     for d in ["15", "16", "17"]:
-        _touch(tmp_path, f"SPXW_exp2026-04-{d}_2026-04-14_09-00-00.csv")
+        _touch(folder, f"SPXW_exp2026-04-{d}_2026-04-14_09-00-00.csv")
     # This one is outside the window
-    _touch(tmp_path, "SPXW_exp2026-04-25_2026-04-14_09-00-00.csv")
+    _touch(folder, "SPXW_exp2026-04-25_2026-04-14_09-00-00.csv")
 
     result = find_latest_snapshots(
         "SPXW",
@@ -110,9 +119,10 @@ def test_find_latest_snapshots_all_expirations_in_window(tmp_path: Path) -> None
 
 def test_find_latest_snapshots_excludes_outside_window(tmp_path: Path) -> None:
     """Expirations before start_date or after start+days_out are excluded."""
-    _touch(tmp_path, "SPXW_exp2026-04-14_2026-04-13_09-00-00.csv")  # before
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-14_09-00-00.csv")  # in window
-    _touch(tmp_path, "SPXW_exp2026-04-22_2026-04-14_09-00-00.csv")  # after
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 14))
+    _touch(folder, "SPXW_exp2026-04-14_2026-04-13_09-00-00.csv")  # before
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-14_09-00-00.csv")  # in window
+    _touch(folder, "SPXW_exp2026-04-22_2026-04-14_09-00-00.csv")  # after
 
     result = find_latest_snapshots(
         "SPXW",
@@ -129,8 +139,9 @@ def test_find_latest_snapshots_excludes_outside_window(tmp_path: Path) -> None:
 
 def test_find_latest_snapshots_0dte_excluded(tmp_path: Path) -> None:
     """include_0dte=False drops the expiry that matches start_date."""
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")  # 0DTE
-    _touch(tmp_path, "SPXW_exp2026-04-16_2026-04-15_09-00-00.csv")  # future
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")  # 0DTE
+    _touch(folder, "SPXW_exp2026-04-16_2026-04-15_09-00-00.csv")  # future
 
     without = find_latest_snapshots(
         "SPXW",
@@ -162,8 +173,9 @@ def test_find_latest_snapshots_empty_dir(tmp_path: Path) -> None:
 
 
 def test_find_latest_snapshots_ignores_other_symbols(tmp_path: Path) -> None:
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
-    _touch(tmp_path, "QQQ_exp2026-04-15_2026-04-15_09-00-00.csv")
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
+    _touch(folder, "QQQ_exp2026-04-15_2026-04-15_09-00-00.csv")
 
     result = find_latest_snapshots(
         "SPXW",
@@ -182,17 +194,90 @@ def test_find_latest_snapshots_ignores_other_symbols(tmp_path: Path) -> None:
 
 def test_list_expirations_deduplicated_and_sorted(tmp_path: Path) -> None:
     """Multiple snapshots per expiry → each expiry appears exactly once, ascending."""
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
     for ts in ["09-00-00", "12-00-00", "15-30-00"]:
-        _touch(tmp_path, f"SPXW_exp2026-04-17_2026-04-15_{ts}.csv")
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
+        _touch(folder, f"SPXW_exp2026-04-17_2026-04-15_{ts}.csv")
+    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
 
     exps = list_expirations("SPXW", data_dir=tmp_path)
 
     assert exps == [date(2026, 4, 15), date(2026, 4, 17)]
 
 
+def test_find_latest_snapshots_prefers_newest_folder_over_older_times(tmp_path: Path) -> None:
+    older = _snapshot_dir(tmp_path, date(2026, 4, 14))
+    newer = _snapshot_dir(tmp_path, date(2026, 4, 15))
+    old_late = _touch(older, "SPXW_exp2026-04-18_2026-04-14_15-59-59.csv")
+    new_early = _touch(newer, "SPXW_exp2026-04-18_2026-04-15_09-00-00.csv")
+
+    result = find_latest_snapshots(
+        "SPXW",
+        start_date=date(2026, 4, 18),
+        days_out=0,
+        include_0dte=True,
+        data_dir=tmp_path,
+    )
+
+    assert old_late.exists()
+    assert result == {date(2026, 4, 18): new_early}
+
+
+def test_find_latest_snapshots_falls_back_to_older_folder_for_missing_expiry(tmp_path: Path) -> None:
+    older = _snapshot_dir(tmp_path, date(2026, 4, 14))
+    newer = _snapshot_dir(tmp_path, date(2026, 4, 15))
+    older_16 = _touch(older, "SPXW_exp2026-04-16_2026-04-14_15-00-00.csv")
+    newer_15 = _touch(newer, "SPXW_exp2026-04-15_2026-04-15_10-00-00.csv")
+
+    result = find_latest_snapshots(
+        "SPXW",
+        start_date=date(2026, 4, 15),
+        days_out=1,
+        include_0dte=True,
+        data_dir=tmp_path,
+    )
+
+    assert result == {
+        date(2026, 4, 15): newer_15,
+        date(2026, 4, 16): older_16,
+    }
+
+
+def test_find_latest_snapshots_ignores_legacy_root_files(tmp_path: Path) -> None:
+    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_16-00-00.csv")
+    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
+    nested = _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
+
+    result = find_latest_snapshots(
+        "SPXW",
+        start_date=date(2026, 4, 15),
+        days_out=0,
+        include_0dte=True,
+        data_dir=tmp_path,
+    )
+
+    assert result == {date(2026, 4, 15): nested}
+
+
 def test_list_expirations_empty(tmp_path: Path) -> None:
     assert list_expirations("SPXW", data_dir=tmp_path) == []
+
+
+def test_find_all_snapshots_for_expiry_across_multiple_sample_dates(tmp_path: Path) -> None:
+    older = _snapshot_dir(tmp_path, date(2026, 4, 14))
+    newer = _snapshot_dir(tmp_path, date(2026, 4, 15))
+    first = _touch(older, "SPXW_exp2026-04-18_2026-04-14_09-00-00.csv")
+    second = _touch(older, "SPXW_exp2026-04-18_2026-04-14_12-00-00.csv")
+    third = _touch(newer, "SPXW_exp2026-04-18_2026-04-15_10-00-00.csv")
+    _touch(newer, "SPXW_exp2026-04-19_2026-04-15_10-00-00.csv")
+    _touch(newer, "QQQ_exp2026-04-18_2026-04-15_10-00-00.csv")
+
+    result = find_all_snapshots_for_expiry("SPXW", expiry=date(2026, 4, 18), data_dir=tmp_path)
+
+    assert result == [
+        (datetime(2026, 4, 14, 9, 0, 0), first),
+        (datetime(2026, 4, 14, 12, 0, 0), second),
+        (datetime(2026, 4, 15, 10, 0, 0), third),
+    ]
 
 
 # ---------------------------------------------------------------------------

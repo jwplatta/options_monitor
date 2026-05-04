@@ -23,6 +23,8 @@ _OPTIONS_DTYPES: dict[str, Any] = {
     "mark": "float64",
     "bid": "float64",
     "ask": "float64",
+    "last": "float64",
+    "last_size": "float64",
     "total_volume": "float64",
 }
 
@@ -43,6 +45,42 @@ def _parse_filename(path: Path) -> tuple[date, datetime] | None:
         return None
 
 
+def _iter_snapshot_dirs(data_dir: Path, reverse: bool = False) -> list[tuple[date, Path]]:
+    """Return valid dated snapshot directories under the provider root."""
+    snapshot_dirs: list[tuple[date, Path]] = []
+    for year_dir in data_dir.iterdir() if data_dir.exists() else []:
+        if not year_dir.is_dir():
+            continue
+        for month_dir in year_dir.iterdir():
+            if not month_dir.is_dir():
+                continue
+            for day_dir in month_dir.iterdir():
+                if not day_dir.is_dir():
+                    continue
+                try:
+                    folder_date = date(
+                        int(year_dir.name),
+                        int(month_dir.name),
+                        int(day_dir.name),
+                    )
+                except ValueError:
+                    continue
+                snapshot_dirs.append((folder_date, day_dir))
+    return sorted(snapshot_dirs, key=lambda item: item[0], reverse=reverse)
+
+
+def _iter_symbol_snapshots(directory: Path, symbol: str) -> list[tuple[date, datetime, Path]]:
+    """Return parsed snapshot metadata for one symbol within a dated directory."""
+    snapshots: list[tuple[date, datetime, Path]] = []
+    for path in directory.glob(f"{symbol}_exp*.csv"):
+        parsed = _parse_filename(path)
+        if parsed is None:
+            continue
+        exp_date, fetch_dt = parsed
+        snapshots.append((exp_date, fetch_dt, path))
+    return snapshots
+
+
 @st.cache_data(ttl=300)
 def list_expirations(
     symbol: str,
@@ -50,10 +88,9 @@ def list_expirations(
 ) -> list[date]:
     """Return sorted list of all available expiration dates from filenames (no CSV reads)."""
     seen: set[date] = set()
-    for path in data_dir.glob(f"{symbol}_exp*.csv"):
-        parsed = _parse_filename(path)
-        if parsed:
-            seen.add(parsed[0])
+    for _, snapshot_dir in _iter_snapshot_dirs(data_dir):
+        for exp_date, _, _ in _iter_symbol_snapshots(snapshot_dir, symbol):
+            seen.add(exp_date)
     return sorted(seen)
 
 
@@ -66,22 +103,29 @@ def find_latest_snapshots(
     data_dir: Path = OPTIONS_DIR,
 ) -> dict[date, Path]:
     """Return {expiry_date: most_recent_snapshot_path} for expirations in window."""
-    end_date = date.fromordinal(start_date.toordinal() + days_out)
-    best: dict[date, tuple[datetime, Path]] = {}
+    target_expiries = {
+        date.fromordinal(start_date.toordinal() + offset)
+        for offset in range(days_out + 1)
+        if include_0dte or offset > 0
+    }
+    best: dict[date, Path] = {}
 
-    for path in data_dir.glob(f"{symbol}_exp*.csv"):
-        parsed = _parse_filename(path)
-        if not parsed:
-            continue
-        exp_date, fetch_dt = parsed
-        if not (start_date <= exp_date <= end_date):
-            continue
-        if not include_0dte and exp_date == start_date:
-            continue
-        if exp_date not in best or fetch_dt > best[exp_date][0]:
-            best[exp_date] = (fetch_dt, path)
+    for _, snapshot_dir in _iter_snapshot_dirs(data_dir, reverse=True):
+        latest_for_day: dict[date, tuple[datetime, Path]] = {}
+        for exp_date, fetch_dt, path in _iter_symbol_snapshots(snapshot_dir, symbol):
+            if exp_date not in target_expiries:
+                continue
+            if exp_date in best:
+                continue
+            current = latest_for_day.get(exp_date)
+            if current is None or fetch_dt > current[0]:
+                latest_for_day[exp_date] = (fetch_dt, path)
+        for exp_date, (_, path) in latest_for_day.items():
+            best[exp_date] = path
+        if len(best) == len(target_expiries):
+            break
 
-    return {exp: info[1] for exp, info in sorted(best.items())}
+    return {exp: path for exp, path in sorted(best.items())}
 
 
 @st.cache_data(ttl=30)
@@ -91,11 +135,11 @@ def find_all_snapshots_for_expiry(
     data_dir: Path = OPTIONS_DIR,
 ) -> list[tuple[datetime, Path]]:
     """Return all (fetch_datetime, path) pairs for a given expiry, sorted by time."""
-    results = []
-    for path in data_dir.glob(f"{symbol}_exp{expiry}_*.csv"):
-        parsed = _parse_filename(path)
-        if parsed and parsed[0] == expiry:
-            results.append((parsed[1], path))
+    results: list[tuple[datetime, Path]] = []
+    for _, snapshot_dir in _iter_snapshot_dirs(data_dir):
+        for exp_date, fetch_dt, path in _iter_symbol_snapshots(snapshot_dir, symbol):
+            if exp_date == expiry:
+                results.append((fetch_dt, path))
     return sorted(results)
 
 
