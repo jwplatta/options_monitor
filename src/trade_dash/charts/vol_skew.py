@@ -11,15 +11,20 @@ def build_vol_skew_chart(
     spot: float,
     strike_range: float = 300.0,
     title: str = "Volatility Skew",
+    value_col: str = "volatility",
+    value_label: str = "Implied Volatility (%)",
+    allow_negative: bool = False,
+    abs_puts: bool = False,
 ) -> go.Figure:
-    """Line chart: implied vol vs strike for calls and puts of a single expiry."""
+    """Line chart: selected option metric vs strike for calls and puts of a single expiry."""
     df = opts.copy()
     df["K"] = pd.to_numeric(df["strike"], errors="coerce")
-    df["vol"] = pd.to_numeric(df["volatility"], errors="coerce")
+    df["value"] = pd.to_numeric(df[value_col], errors="coerce")
     df["oi"] = pd.to_numeric(df["open_interest"], errors="coerce").fillna(0)
-    df = df.dropna(subset=["K", "vol", "contract_type"])
+    df = df.dropna(subset=["K", "value", "contract_type"])
     df = df[(df["K"] >= spot - strike_range) & (df["K"] <= spot + strike_range)]
-    df = df[df["vol"] > 0]
+    if not allow_negative:
+        df = df[df["value"] > 0]
 
     # OTM + first 10 ITM strikes for each side
     _itm_call_strikes = sorted(df.loc[df["contract_type"].str.upper() == "CALL", "K"].unique())
@@ -33,17 +38,21 @@ def build_vol_skew_chart(
     call_df = df[(df["contract_type"].str.upper() == "CALL") & (df["K"] >= call_min)]
     put_df  = df[(df["contract_type"].str.upper() == "PUT")  & (df["K"] <= put_max)]
 
-    calls_vol = call_df.groupby("K")["vol"].mean().sort_index()
-    puts_vol  = put_df.groupby("K")["vol"].mean().sort_index()
+    calls_value = call_df.groupby("K")["value"].mean().sort_index()
+    puts_value = put_df.groupby("K")["value"].mean().sort_index()
+    if abs_puts:
+        puts_value = puts_value.abs()
 
-    calls_oi = call_df.groupby("K")["oi"].sum().reindex(calls_vol.index, fill_value=0)
-    puts_oi  = put_df.groupby("K")["oi"].sum().reindex(puts_vol.index, fill_value=0)
+    calls_oi = call_df.groupby("K")["oi"].sum().reindex(calls_value.index, fill_value=0)
+    puts_oi = put_df.groupby("K")["oi"].sum().reindex(puts_value.index, fill_value=0)
 
-    all_vols = pd.concat([calls_vol, puts_vol]).dropna()
-    if all_vols.empty:
+    all_values = pd.concat([calls_value, puts_value]).dropna()
+    if all_values.empty:
         return go.Figure()
-    y_min = max(0, all_vols.min() * 0.95)
-    y_max = all_vols.max() * 1.05
+    raw_min = all_values.min()
+    raw_max = all_values.max()
+    y_min = raw_min * 1.05 if raw_min < 0 else max(0.0, raw_min * 0.95)
+    y_max = raw_max * 0.95 if raw_max < 0 else raw_max * 1.05
 
     fig = go.Figure()
 
@@ -61,17 +70,17 @@ def build_vol_skew_chart(
         yaxis="y2",
     ))
 
-    # IV lines on left axis
+    # Metric lines on left axis
     fig.add_trace(go.Scatter(
-        x=calls_vol.index, y=calls_vol.values,
-        name="Call IV",
+        x=calls_value.index, y=calls_value.values,
+        name=f"Call {value_label}",
         line={"color": "green", "width": 1.5},
         mode="lines+markers",
         marker={"size": 4},
     ))
     fig.add_trace(go.Scatter(
-        x=puts_vol.index, y=puts_vol.values,
-        name="Put IV",
+        x=puts_value.index, y=puts_value.values,
+        name=f"Put {value_label}",
         line={"color": "red", "width": 1.5},
         mode="lines+markers",
         marker={"size": 4},
@@ -82,7 +91,7 @@ def build_vol_skew_chart(
         title=title,
         xaxis_title="Strike",
         xaxis={"dtick": 25},
-        yaxis={"title": "Implied Volatility (%)", "range": [y_min, y_max]},
+        yaxis={"title": value_label, "range": [y_min, y_max]},
         yaxis2={"title": "Open Interest", "overlaying": "y", "side": "right", "showgrid": False},
         barmode="overlay",
         template="plotly_dark",

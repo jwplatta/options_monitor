@@ -14,12 +14,16 @@ from trade_dash.calc.gex import (
     net_gex_by_strike,
 )
 from trade_dash.calc.gex_term_structure import compute_gex_term_structure
+from trade_dash.calc.maker_taker import compute_maker_taker_flow
 from trade_dash.calc.spread import compute_intraday_spread
+from trade_dash.calc.vol import compute_risk_reversal
 from trade_dash.charts.flow_heatmap import build_flow_heatmap_chart
 from trade_dash.charts.gex_aggregate import build_gex_aggregate_chart
 from trade_dash.charts.gex_heatmap import build_gex_heatmap_chart, compute_gex_history
 from trade_dash.charts.gex_single import build_gex_single_expiry_chart
 from trade_dash.charts.gex_term_structure import build_gex_term_structure_chart
+from trade_dash.charts.maker_taker_bubble import build_maker_taker_bubble_chart
+from trade_dash.charts.skew_indicators import build_skew_indicators
 from trade_dash.charts.spread_heatmap import build_spread_heatmap_chart
 from trade_dash.charts.vol_skew import build_vol_skew_chart
 from trade_dash.data.options import (
@@ -111,8 +115,17 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                 )
 
         with col_chart:
-            tab_gex, tab_chains, tab_history, tab_intraday, tab_gamma_heatmap = st.tabs(
-                ["GEX", "Chains", "Chain GEX History", "Intraday", "Gamma Heatmap"]
+            (tab_gex, tab_chains, tab_history, tab_intraday, tab_gamma_heatmap, tab_maker_taker) = (
+                st.tabs(
+                    [
+                        "GEX",
+                        "Chains",
+                        "Chain GEX History",
+                        "Intraday",
+                        "Gamma Heatmap",
+                        "Maker-Taker",
+                    ]
+                )
             )
 
             with tab_gex:
@@ -131,6 +144,12 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                     )
                     if single_snapshots:
                         single_opts = load_options_snapshot(next(iter(single_snapshots.values())))
+                        # ── Skew scalar indicators ────────────────────────────────────────────
+                        rr_result = compute_risk_reversal(single_opts)
+                        if rr_result is not None:
+                            fig_rr = build_skew_indicators(rr_result, spot=spot)
+                            st.plotly_chart(fig_rr, use_container_width=True)
+
                         fig_single = build_gex_single_expiry_chart(
                             single_opts,
                             spot=spot,
@@ -148,6 +167,36 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                         )
                         st.subheader("Volatility Skew")
                         st.plotly_chart(fig_skew, use_container_width=True)
+
+                        price_series = st.radio(
+                            "Price series",
+                            options=["mark", "bid", "ask"],
+                            horizontal=True,
+                            key="gm_chain_price_series",
+                        )
+                        fig_price = build_vol_skew_chart(
+                            single_opts,
+                            spot=spot,
+                            strike_range=strike_range,
+                            title=f"{symbol} Option Price {selected_exp}",
+                            value_col=price_series,
+                            value_label="Price",
+                        )
+                        st.subheader("Option Price by Strike")
+                        st.plotly_chart(fig_price, use_container_width=True)
+
+                        fig_delta = build_vol_skew_chart(
+                            single_opts,
+                            spot=spot,
+                            strike_range=strike_range,
+                            title=f"{symbol} Delta by Strike {selected_exp}",
+                            value_col="delta",
+                            value_label="Delta",
+                            allow_negative=True,
+                            abs_puts=True,
+                        )
+                        st.subheader("Delta by Strike")
+                        st.plotly_chart(fig_delta, use_container_width=True)
 
             with tab_history:
                 if selected_exp_str:
@@ -373,7 +422,12 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                     st.warning(f"No {symbol} snapshots found for selected date range.")
                 else:
                     gh_key = (
-                        symbol, round(spot), strike_range, gh_start, gh_end, len(gh_snapshots)
+                        symbol,
+                        round(spot),
+                        strike_range,
+                        gh_start,
+                        gh_end,
+                        len(gh_snapshots),
                     )
                     with st.spinner("Computing GEX term structure..."):
                         if st.session_state.get("_gh_key") != gh_key:
@@ -409,5 +463,108 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                         title=f"{symbol} GEX Term Structure",
                     )
                     st.plotly_chart(fig_gh, use_container_width=True)
+
+            with tab_maker_taker:
+                if selected_exp_str:
+                    selected_exp = date.fromisoformat(selected_exp_str)
+
+                    # Controls (shared)
+                    col_mt_wt, col_mt_bucket, col_mt_top_n, col_mt_date = st.columns([1, 1, 1, 1])
+                    with col_mt_wt:
+                        mt_weight = str(
+                            st.radio(
+                                "Weight by",
+                                options=["last_size", "total_volume"],
+                                horizontal=True,
+                                key="gm_mt_weight",
+                            )
+                        )
+                    with col_mt_bucket:
+                        mt_bucket = int(
+                            st.select_slider(
+                                "Sample interval (minutes)",
+                                options=[1, 5, 10, 15, 30, 60],
+                                value=5,
+                                key="gm_mt_bucket",
+                            )
+                        )
+                    with col_mt_top_n:
+                        mt_top_n = int(
+                            st.slider(
+                                "Top N strikes",
+                                min_value=5,
+                                max_value=20,
+                                value=10,
+                                key="gm_mt_top_n",
+                            )
+                        )
+                    with col_mt_date:
+                        mt_date = st.date_input(
+                            "Sample date",
+                            value=date.today(),
+                            key="gm_mt_date",
+                        )
+
+                    all_expiry_snapshots = find_all_snapshots_for_expiry(
+                        symbol, expiry=selected_exp, data_dir=options_dir
+                    )
+
+                    # Render CALL then PUT
+                    for mt_ct in ["CALL", "PUT"]:
+                        mt_key = (
+                            symbol,
+                            selected_exp_str,
+                            round(spot),
+                            strike_range,
+                            mt_ct,
+                            mt_bucket,
+                            mt_weight,
+                            mt_date,
+                            mt_top_n,
+                            len(all_expiry_snapshots),
+                        )
+                        state_prefix = f"_mt_{mt_ct}"
+
+                        with st.spinner(f"Computing maker-taker flow ({mt_ct})..."):
+                            if st.session_state.get(f"{state_prefix}_key") != mt_key:
+                                (
+                                    mt_timestamps,
+                                    mt_strikes,
+                                    mt_flows,
+                                    mt_bucket_times,
+                                    mt_bucket_prices,
+                                ) = compute_maker_taker_flow(
+                                    all_expiry_snapshots,
+                                    spot=spot,
+                                    moneyness_pct=range_pct / 100,
+                                    contract_filter=mt_ct,
+                                    bucket_minutes=mt_bucket,
+                                    weight_by=mt_weight,
+                                    target_date=mt_date,
+                                    top_n_strikes=mt_top_n,
+                                )
+                                st.session_state[f"{state_prefix}_key"] = mt_key
+                                st.session_state[f"{state_prefix}_timestamps"] = mt_timestamps
+                                st.session_state[f"{state_prefix}_strikes"] = mt_strikes
+                                st.session_state[f"{state_prefix}_flows"] = mt_flows
+                                st.session_state[f"{state_prefix}_bucket_times"] = mt_bucket_times
+                                st.session_state[f"{state_prefix}_bucket_prices"] = mt_bucket_prices
+                            else:
+                                mt_timestamps = st.session_state[f"{state_prefix}_timestamps"]
+                                mt_strikes = st.session_state[f"{state_prefix}_strikes"]
+                                mt_flows = st.session_state[f"{state_prefix}_flows"]
+                                mt_bucket_times = st.session_state[f"{state_prefix}_bucket_times"]
+                                mt_bucket_prices = st.session_state[f"{state_prefix}_bucket_prices"]
+
+                            fig_mt = build_maker_taker_bubble_chart(
+                                mt_timestamps,
+                                mt_strikes,
+                                mt_flows,
+                                mt_bucket_times,
+                                mt_bucket_prices,
+                                spot=spot,
+                                title=f"{symbol} Maker-Taker {selected_exp} ({mt_ct})",
+                            )
+                        st.plotly_chart(fig_mt, use_container_width=True)
 
     _render()
