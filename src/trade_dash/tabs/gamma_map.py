@@ -42,9 +42,6 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
         col_ctrl, col_chart = st.columns([1, 3])
 
         with col_ctrl:
-            days_out = int(
-                st.slider("Days out", min_value=1, max_value=30, value=10, key="gm_days")
-            )
             include_0dte = st.toggle("Include 0DTE", value=True, key="gm_0dte")
             symbol = str(
                 st.selectbox("Symbol", ["SPXW", "SPX", "QQQ", "DIA"], index=0, key="gm_symbol")
@@ -61,38 +58,7 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
             )
 
         today = date.today()
-        snapshots = find_latest_snapshots(
-            symbol,
-            start_date=today,
-            days_out=days_out,
-            include_0dte=include_0dte,
-            data_dir=options_dir,
-        )
-
-        if not snapshots:
-            with col_chart:
-                st.warning(f"No {symbol} options snapshots found for next {days_out} days.")
-            return
-
-        all_opts = pd.concat(
-            [load_options_snapshot(p) for p in snapshots.values()], ignore_index=True
-        )
-
-        spot_series = pd.to_numeric(all_opts["underlying_price"], errors="coerce").dropna()
-        if spot_series.empty:
-            with col_chart:
-                st.error("No valid underlying_price in options data.")
-            return
-        spot = float(spot_series.iloc[0])
-        strike_range = round(spot * range_pct / 100)
-
-        strike_gex = net_gex_by_strike(all_opts, spot=spot, strike_range=strike_range)
-        with st.spinner("Computing GEX by price grid..."):
-            price_gex = net_gex_by_price(all_opts, spot=spot, price_range=strike_range)
-
-        fig_agg = build_gex_aggregate_chart(
-            strike_gex, price_gex, spot, title=f"{symbol} GEX Aggregate ({days_out}d)"
-        )
+        days_out = int(st.session_state.get("gm_gex_days", 10))
 
         # Single expiry controls (shared across both sub-tabs)
         available_exps = list_expirations(symbol, data_dir=options_dir)
@@ -129,6 +95,44 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
             )
 
             with tab_gex:
+                days_out = int(
+                    st.radio(
+                        "Aggregate window",
+                        options=[10, 20, 30],
+                        horizontal=True,
+                        key="gm_gex_days",
+                    )
+                )
+                snapshots = find_latest_snapshots(
+                    symbol,
+                    start_date=today,
+                    days_out=days_out,
+                    include_0dte=include_0dte,
+                    data_dir=options_dir,
+                )
+
+                if not snapshots:
+                    st.warning(f"No {symbol} options snapshots found for next {days_out} days.")
+                    return
+
+                all_opts = pd.concat(
+                    [load_options_snapshot(p) for p in snapshots.values()], ignore_index=True
+                )
+
+                spot_series = pd.to_numeric(all_opts["underlying_price"], errors="coerce").dropna()
+                if spot_series.empty:
+                    st.error("No valid underlying_price in options data.")
+                    return
+                spot = float(spot_series.iloc[0])
+                strike_range = round(spot * range_pct / 100)
+
+                strike_gex = net_gex_by_strike(all_opts, spot=spot, strike_range=strike_range)
+                with st.spinner("Computing GEX by price grid..."):
+                    price_gex = net_gex_by_price(all_opts, spot=spot, price_range=strike_range)
+
+                fig_agg = build_gex_aggregate_chart(
+                    strike_gex, price_gex, spot, title=f"{symbol} GEX Aggregate ({days_out}d)"
+                )
                 st.plotly_chart(fig_agg, use_container_width=True)
 
             with tab_chains:
@@ -469,16 +473,7 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                     selected_exp = date.fromisoformat(selected_exp_str)
 
                     # Controls (shared)
-                    col_mt_wt, col_mt_bucket, col_mt_top_n, col_mt_date = st.columns([1, 1, 1, 1])
-                    with col_mt_wt:
-                        mt_weight = str(
-                            st.radio(
-                                "Weight by",
-                                options=["last_size", "total_volume"],
-                                horizontal=True,
-                                key="gm_mt_weight",
-                            )
-                        )
+                    col_mt_bucket, col_mt_top_n, col_mt_date = st.columns([1, 1, 1])
                     with col_mt_bucket:
                         mt_bucket = int(
                             st.select_slider(
@@ -504,6 +499,7 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                             value=date.today(),
                             key="gm_mt_date",
                         )
+                    mt_weight = "total_volume"
 
                     all_expiry_snapshots = find_all_snapshots_for_expiry(
                         symbol, expiry=selected_exp, data_dir=options_dir
@@ -518,7 +514,6 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                             strike_range,
                             mt_ct,
                             mt_bucket,
-                            mt_weight,
                             mt_date,
                             mt_top_n,
                             len(all_expiry_snapshots),
