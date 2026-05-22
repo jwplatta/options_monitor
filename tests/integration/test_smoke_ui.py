@@ -41,12 +41,14 @@ def test_vol_tab_renders(page: Page, streamlit_server: str) -> None:
 
 
 def test_gamma_map_tab_renders(page: Page, streamlit_server: str) -> None:
-    """Gamma Map tab loads and shows the days-out slider."""
+    """Gamma Map tab loads and shows aggregate GEX day presets."""
     page.goto(streamlit_server)
     page.wait_for_selector("text=Gamma Map", timeout=20000)
     page.get_by_role("tab", name="Gamma Map").click()
-    # The slider label is "Days out"
-    page.wait_for_selector("text=Days out", timeout=15000, state="attached")
+    page.wait_for_selector("text=Aggregate window", timeout=15000, state="attached")
+    assert page.locator("label:has-text('10')").count() > 0
+    assert page.locator("label:has-text('20')").count() > 0
+    assert page.locator("label:has-text('30')").count() > 0
 
 
 def test_agent_chat_toggle_visible(page: Page, streamlit_server: str) -> None:
