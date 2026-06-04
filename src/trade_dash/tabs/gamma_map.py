@@ -98,7 +98,7 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                 days_out = int(
                     st.radio(
                         "Aggregate window",
-                        options=[10, 20, 30],
+                        options=[5, 10, 20, 30],
                         horizontal=True,
                         key="gm_gex_days",
                     )
