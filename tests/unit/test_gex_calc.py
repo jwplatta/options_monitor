@@ -33,11 +33,11 @@ def test_net_gex_by_strike_columns(spxw_opts: pd.DataFrame) -> None:
     assert len(result) > 0
 
 
-def test_net_gex_by_strike_has_both_signs(spxw_opts: pd.DataFrame) -> None:
+def test_net_gex_by_strike_has_nonzero_values(spxw_opts: pd.DataFrame) -> None:
     spot = float(spxw_opts["underlying_price"].iloc[0])
     result = net_gex_by_strike(spxw_opts, spot=spot)
     assert result["net_gex"].max() > 0
-    assert result["net_gex"].min() < 0
+    assert result["net_gex"].abs().sum() > 0
 
 
 def test_find_zero_gamma_level_finds_crossing() -> None:

@@ -6,35 +6,33 @@ from playwright.sync_api import Page, expect
 
 
 def test_dashboard_loads_title(page: Page, streamlit_server: str) -> None:
-    """Dashboard loads without error and shows tab navigation."""
+    """Dashboard loads without error and shows the current navigation control."""
     page.goto(streamlit_server)
-    page.wait_for_selector("text=Summary", timeout=20000)
+    page.wait_for_selector("text=trade_dash", timeout=20000)
+    page.wait_for_selector("button:has-text('Regime')", timeout=20000)
     assert page.title() is not None
 
 
-def test_all_tabs_visible(page: Page, streamlit_server: str) -> None:
-    """All 4 tabs are visible in the navigation."""
+def test_all_navigation_options_visible(page: Page, streamlit_server: str) -> None:
+    """The top-level segmented navigation exposes all dashboard panels."""
     page.goto(streamlit_server)
-    page.wait_for_selector("text=Summary", timeout=20000)
-    for tab_name in ["Summary", "Regime", "Vol", "Gamma Map"]:
-        assert page.locator(f"text={tab_name}").count() > 0, f"Tab '{tab_name}' not found"
+    page.wait_for_selector("button:has-text('Regime')", timeout=20000)
+    for panel_name in ["Regime", "Vol", "Gamma Map"]:
+        assert page.locator(f"button:has-text('{panel_name}')").count() > 0
 
 
 def test_regime_tab_renders_chart(page: Page, streamlit_server: str) -> None:
-    """Regime tab loads and renders a plotly chart."""
+    """Regime panel is the default view and renders a plotly chart."""
     page.goto(streamlit_server)
-    page.wait_for_selector("text=Regime", timeout=20000)
-    page.get_by_role("tab", name="Regime").click()
-    # Use state="attached" since Streamlit may keep elements in DOM but not visible
+    page.wait_for_selector("button:has-text('Regime')", timeout=20000)
     page.wait_for_selector("[data-testid='stPlotlyChart']", timeout=30000, state="attached")
 
 
 def test_vol_tab_renders(page: Page, streamlit_server: str) -> None:
     """Vol tab loads and shows the 9D/30D radio labels."""
     page.goto(streamlit_server)
-    page.wait_for_selector("text=Vol", timeout=20000)
-    page.get_by_role("tab", name="Vol").click()
-    # Radio options "9D" and "30D" are rendered as labels; use partial-text match
+    page.wait_for_selector("button:has-text('Vol')", timeout=20000)
+    page.locator("button:has-text('Vol')").click()
     page.wait_for_selector("label:has-text('9D')", timeout=10000, state="attached")
     assert page.locator("label:has-text('9D')").count() > 0
     assert page.locator("label:has-text('30D')").count() > 0
@@ -43,8 +41,8 @@ def test_vol_tab_renders(page: Page, streamlit_server: str) -> None:
 def test_gamma_map_tab_renders(page: Page, streamlit_server: str) -> None:
     """Gamma Map tab loads and shows aggregate GEX day presets."""
     page.goto(streamlit_server)
-    page.wait_for_selector("text=Gamma Map", timeout=20000)
-    page.get_by_role("tab", name="Gamma Map").click()
+    page.wait_for_selector("button:has-text('Gamma Map')", timeout=20000)
+    page.locator("button:has-text('Gamma Map')").click()
     page.wait_for_selector("text=Aggregate window", timeout=15000, state="attached")
     assert page.locator("label:has-text('5')").count() > 0
     assert page.locator("label:has-text('10')").count() > 0

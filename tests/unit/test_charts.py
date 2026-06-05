@@ -39,9 +39,9 @@ def test_build_sma_price_chart_returns_figure(spx_day: pd.DataFrame) -> None:
 
 
 def test_build_sma_volume_chart_returns_figure(spx_day: pd.DataFrame) -> None:
-    fig = build_sma_volume_chart(spx_day, fast_window=5, slow_window=20)
+    fig = build_sma_volume_chart(spx_day)
     assert isinstance(fig, go.Figure)
-    assert len(fig.data) == 3  # volume bar + fast MA + slow MA
+    assert len(fig.data) == 3  # volume bar + close + weekly VWAP
 
 
 def test_build_iv_rv_chart_returns_figure() -> None:
