@@ -13,6 +13,12 @@ from trade_dash.data.options import load_options_snapshot
 _CHICAGO = ZoneInfo("America/Chicago")
 
 
+def _to_chicago(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.astimezone(_CHICAGO).replace(tzinfo=None)
+
+
 def compute_intraday_spread(
     snapshots: list[tuple[datetime, Path]],
     spot: float,
@@ -38,10 +44,10 @@ def compute_intraday_spread(
     if not snapshots:
         return [], [], [], []
 
-    today = target_date if target_date is not None else date.today()
+    local_target_date = target_date if target_date is not None else date.today()
 
     today_snapshots = sorted(
-        ((ts, path) for ts, path in snapshots if ts.date() == today),
+        ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == local_target_date),
         key=lambda x: x[0],
     )
     seen_buckets: set[datetime] = set()
@@ -123,12 +129,7 @@ def compute_intraday_spread(
     strikes = [float(s) for s in pivot.index]
     utc_timestamps = list(pivot.columns)
 
-    timestamps = [
-        ts.replace(tzinfo=UTC).astimezone(_CHICAGO).replace(tzinfo=None)
-        if ts.tzinfo is None
-        else ts.astimezone(_CHICAGO).replace(tzinfo=None)
-        for ts in utc_timestamps
-    ]
+    timestamps = [_to_chicago(ts) for ts in utc_timestamps]
 
     matrix = pivot.values.tolist()
     prices = [price_by_ts.get(ts, float("nan")) for ts in utc_timestamps]

@@ -13,6 +13,12 @@ from trade_dash.data.options import load_options_snapshot
 _CHICAGO = ZoneInfo("America/Chicago")
 
 
+def _to_chicago(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.astimezone(_CHICAGO).replace(tzinfo=None)
+
+
 def compute_maker_taker_flow(
     snapshots: list[tuple[datetime, Path]],
     spot: float,
@@ -42,11 +48,11 @@ def compute_maker_taker_flow(
     if not snapshots:
         return [], [], [], [], []
 
-    today = target_date if target_date is not None else date.today()
+    local_target_date = target_date if target_date is not None else date.today()
 
-    # Filter to target date, sort ascending
+    # Filter to the selected Chicago-local session date, then sort ascending.
     today_snapshots = sorted(
-        ((ts, path) for ts, path in snapshots if ts.date() == today),
+        ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == local_target_date),
         key=lambda x: x[0],
     )
     if not today_snapshots:
@@ -155,11 +161,6 @@ def compute_maker_taker_flow(
 
     # Sort and build parallel flat arrays
     flow_df = flow_df.sort_values(["_ts", "_strike"])
-
-    def _to_chicago(ts: datetime) -> datetime:
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-        return ts.astimezone(_CHICAGO).replace(tzinfo=None)
 
     timestamps = [_to_chicago(ts) for ts in flow_df["_ts"].tolist()]
     strikes = [float(s) for s in flow_df["_strike"].tolist()]

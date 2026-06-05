@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -99,6 +99,58 @@ def test_returns_empty_when_no_snapshots_on_target_date(tmp_path: Path) -> None:
     )
     result = compute_maker_taker_flow([snap], spot=5000.0, target_date=date(2026, 4, 28))
     assert result == ([], [], [], [], [])
+
+
+def test_target_date_filter_uses_chicago_local_date_for_utc_snapshots(tmp_path: Path) -> None:
+    prior_local_evening = _make_snapshot(
+        tmp_path,
+        datetime(2026, 6, 5, 0, 30, 0, tzinfo=UTC),
+        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"}],
+    )
+    target_local_morning = _make_snapshot(
+        tmp_path,
+        datetime(2026, 6, 5, 14, 30, 0, tzinfo=UTC),
+        [{"contract_type": "CALL", "strike": "5025", "bid": "10", "ask": "12", "last": "11.5", "last_size": "7"}],
+    )
+
+    timestamps, strikes, flows, bucket_times, bucket_prices = compute_maker_taker_flow(
+        [prior_local_evening, target_local_morning],
+        spot=5000.0,
+        target_date=date(2026, 6, 5),
+    )
+
+    assert len(timestamps) == 1
+    assert len(strikes) == 1
+    assert len(flows) == 1
+    assert strikes == [5025.0]
+    assert bucket_times[0].date() == date(2026, 6, 5)
+    assert bucket_prices == [5000.0]
+
+
+def test_target_date_filter_treats_naive_snapshot_datetimes_as_utc(tmp_path: Path) -> None:
+    prior_local_evening = _make_snapshot(
+        tmp_path,
+        datetime(2026, 6, 5, 0, 30, 0),
+        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"}],
+    )
+    target_local_morning = _make_snapshot(
+        tmp_path,
+        datetime(2026, 6, 5, 14, 30, 0),
+        [{"contract_type": "CALL", "strike": "5025", "bid": "10", "ask": "12", "last": "11.5", "last_size": "7"}],
+    )
+
+    timestamps, strikes, flows, bucket_times, bucket_prices = compute_maker_taker_flow(
+        [prior_local_evening, target_local_morning],
+        spot=5000.0,
+        target_date=date(2026, 6, 5),
+    )
+
+    assert len(timestamps) == 1
+    assert len(strikes) == 1
+    assert len(flows) == 1
+    assert strikes == [5025.0]
+    assert bucket_times[0].date() == date(2026, 6, 5)
+    assert bucket_prices == [5000.0]
 
 
 # ---------------------------------------------------------------------------
