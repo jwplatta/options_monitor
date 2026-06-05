@@ -9,6 +9,22 @@ from trade_dash.tabs.gamma_map import render_gamma_map_tab
 from trade_dash.tabs.regime import render_regime_tab
 from trade_dash.tabs.vol import render_vol_tab
 
+_TOP_LEVEL_TABS = ["Regime", "Vol", "Gamma Map"]
+
+
+def _render_active_dashboard_tab(active_tab: str) -> None:
+    """Render only the selected top-level dashboard panel."""
+    if active_tab == "Regime":
+        render_regime_tab(candle_dir=CANDLE_DIR)
+        return
+    if active_tab == "Vol":
+        render_vol_tab(candle_dir=CANDLE_DIR)
+        return
+    if active_tab == "Gamma Map":
+        render_gamma_map_tab(options_dir=OPTIONS_DIR, candle_dir=CANDLE_DIR)
+        return
+    raise ValueError(f"Unknown dashboard tab: {active_tab}")
+
 
 def render_dashboard() -> None:
     """Render the main 3-tab Streamlit dashboard."""
@@ -28,14 +44,17 @@ def render_dashboard() -> None:
             )
             st.chat_input("Ask about the charts...", disabled=True)
 
-    tab0, tab1, tab2 = st.tabs(["Regime", "Vol", "Gamma Map"])
-
-    with tab0:
-        render_regime_tab(candle_dir=CANDLE_DIR)
-    with tab1:
-        render_vol_tab(candle_dir=CANDLE_DIR)
-    with tab2:
-        render_gamma_map_tab(options_dir=OPTIONS_DIR, candle_dir=CANDLE_DIR)
+    active_tab = str(
+        st.segmented_control(
+            "Dashboard",
+            options=_TOP_LEVEL_TABS,
+            default="Regime",
+            selection_mode="single",
+            key="dashboard_tab",
+            label_visibility="collapsed",
+        )
+    )
+    _render_active_dashboard_tab(active_tab)
 
 
 if __name__ == "__main__":

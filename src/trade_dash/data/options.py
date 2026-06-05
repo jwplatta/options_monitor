@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+import sqlite3
+from contextlib import closing
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from trade_dash.config import OPTIONS_DIR
+from trade_dash.config import OPTIONS_DIR, TICKRAKE_DB_PATH
 
 _OPTIONS_DTYPES: dict[str, Any] = {
     "strike": "float64",
@@ -28,6 +30,9 @@ _OPTIONS_DTYPES: dict[str, Any] = {
     "total_volume": "float64",
 }
 
+_OPTIONS_DATASET_TYPE = "options"
+_OPTIONS_PROVIDER = "schwab"
+
 
 def _parse_filename(path: Path) -> tuple[date, datetime] | None:
     """Parse expiration date and fetch datetime from filename stem.
@@ -45,53 +50,61 @@ def _parse_filename(path: Path) -> tuple[date, datetime] | None:
         return None
 
 
-def _iter_snapshot_dirs(data_dir: Path, reverse: bool = False) -> list[tuple[date, Path]]:
-    """Return valid dated snapshot directories under the provider root."""
-    snapshot_dirs: list[tuple[date, Path]] = []
-    for year_dir in data_dir.iterdir() if data_dir.exists() else []:
-        if not year_dir.is_dir():
-            continue
-        for month_dir in year_dir.iterdir():
-            if not month_dir.is_dir():
-                continue
-            for day_dir in month_dir.iterdir():
-                if not day_dir.is_dir():
-                    continue
-                try:
-                    folder_date = date(
-                        int(year_dir.name),
-                        int(month_dir.name),
-                        int(day_dir.name),
-                    )
-                except ValueError:
-                    continue
-                snapshot_dirs.append((folder_date, day_dir))
-    return sorted(snapshot_dirs, key=lambda item: item[0], reverse=reverse)
+def _resolve_metadata_db_path(metadata_db_path: Path | None) -> Path:
+    return metadata_db_path or TICKRAKE_DB_PATH
 
 
-def _iter_symbol_snapshots(directory: Path, symbol: str) -> list[tuple[date, datetime, Path]]:
-    """Return parsed snapshot metadata for one symbol within a dated directory."""
-    snapshots: list[tuple[date, datetime, Path]] = []
-    for path in directory.glob(f"{symbol}_exp*.csv"):
-        parsed = _parse_filename(path)
-        if parsed is None:
-            continue
-        exp_date, fetch_dt = parsed
-        snapshots.append((exp_date, fetch_dt, path))
-    return snapshots
+def _connect_metadata_db(metadata_db_path: Path | None) -> sqlite3.Connection:
+    db_path = _resolve_metadata_db_path(metadata_db_path)
+    if not db_path.exists():
+        raise FileNotFoundError(f"Tickrake metadata DB not found: {db_path}")
+
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'file_metadata_cache'"
+    ).fetchone()
+    if has_table is None:
+        conn.close()
+        raise RuntimeError(
+            f"Tickrake metadata DB missing required table 'file_metadata_cache': {db_path}"
+        )
+    return conn
+
+
+def _fetch_metadata_rows(
+    query: str,
+    params: tuple[object, ...],
+    metadata_db_path: Path | None,
+) -> list[sqlite3.Row]:
+    with closing(_connect_metadata_db(metadata_db_path)) as conn:
+        rows = conn.execute(query, params).fetchall()
+    return rows
 
 
 @st.cache_data(ttl=300)
 def list_expirations(
     symbol: str,
     data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
 ) -> list[date]:
-    """Return sorted list of all available expiration dates from filenames (no CSV reads)."""
-    seen: set[date] = set()
-    for _, snapshot_dir in _iter_snapshot_dirs(data_dir):
-        for exp_date, _, _ in _iter_symbol_snapshots(snapshot_dir, symbol):
-            seen.add(exp_date)
-    return sorted(seen)
+    """Return sorted list of available expiration dates from metadata."""
+    del data_dir
+    rows = _fetch_metadata_rows(
+        """
+        SELECT DISTINCT expiration_date
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND expiration_date IS NOT NULL
+        ORDER BY expiration_date ASC
+        """,
+        (_OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol),
+        metadata_db_path,
+    )
+    return [date.fromisoformat(str(row["expiration_date"])) for row in rows]
 
 
 @st.cache_data(ttl=30)
@@ -101,31 +114,47 @@ def find_latest_snapshots(
     days_out: int,
     include_0dte: bool = True,
     data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
 ) -> dict[date, Path]:
     """Return {expiry_date: most_recent_snapshot_path} for expirations in window."""
-    target_expiries = {
-        date.fromordinal(start_date.toordinal() + offset)
-        for offset in range(days_out + 1)
-        if include_0dte or offset > 0
+    del data_dir
+    target_start = start_date if include_0dte else start_date + timedelta(days=1)
+    target_end = start_date + timedelta(days=days_out)
+    if target_end < target_start:
+        return {}
+
+    rows = _fetch_metadata_rows(
+        """
+        SELECT expiration_date, path
+        FROM (
+            SELECT
+                expiration_date,
+                path,
+                ROW_NUMBER() OVER (
+                    PARTITION BY expiration_date
+                    ORDER BY last_observed_at DESC, path DESC
+                ) AS row_num
+            FROM file_metadata_cache
+            WHERE dataset_type = ?
+              AND provider_name = ?
+              AND ticker = ?
+              AND expiration_date BETWEEN ? AND ?
+        )
+        WHERE row_num = 1
+        ORDER BY expiration_date ASC
+        """,
+        (
+            _OPTIONS_DATASET_TYPE,
+            _OPTIONS_PROVIDER,
+            symbol,
+            target_start.isoformat(),
+            target_end.isoformat(),
+        ),
+        metadata_db_path,
+    )
+    return {
+        date.fromisoformat(str(row["expiration_date"])): Path(str(row["path"])) for row in rows
     }
-    best: dict[date, Path] = {}
-
-    for _, snapshot_dir in _iter_snapshot_dirs(data_dir, reverse=True):
-        latest_for_day: dict[date, tuple[datetime, Path]] = {}
-        for exp_date, fetch_dt, path in _iter_symbol_snapshots(snapshot_dir, symbol):
-            if exp_date not in target_expiries:
-                continue
-            if exp_date in best:
-                continue
-            current = latest_for_day.get(exp_date)
-            if current is None or fetch_dt > current[0]:
-                latest_for_day[exp_date] = (fetch_dt, path)
-        for exp_date, (_, path) in latest_for_day.items():
-            best[exp_date] = path
-        if len(best) == len(target_expiries):
-            break
-
-    return {exp: path for exp, path in sorted(best.items())}
 
 
 @st.cache_data(ttl=30)
@@ -133,19 +162,34 @@ def find_all_snapshots_for_expiry(
     symbol: str,
     expiry: date,
     data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
 ) -> list[tuple[datetime, Path]]:
     """Return all (fetch_datetime, path) pairs for a given expiry, sorted by time."""
-    results: list[tuple[datetime, Path]] = []
-    for _, snapshot_dir in _iter_snapshot_dirs(data_dir):
-        for exp_date, fetch_dt, path in _iter_symbol_snapshots(snapshot_dir, symbol):
-            if exp_date == expiry:
-                results.append((fetch_dt, path))
-    return sorted(results)
+    del data_dir
+    rows = _fetch_metadata_rows(
+        """
+        SELECT last_observed_at, path
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND expiration_date = ?
+        ORDER BY last_observed_at ASC, path ASC
+        """,
+        (_OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol, expiry.isoformat()),
+        metadata_db_path,
+    )
+    return [
+        (datetime.fromisoformat(str(row["last_observed_at"])), Path(str(row["path"])))
+        for row in rows
+    ]
 
 
 @st.cache_data(ttl=3600)
 def load_options_snapshot(path: Path) -> pd.DataFrame:
     """Load a single options snapshot CSV with typed columns."""
+    if not path.exists():
+        raise FileNotFoundError(f"Options snapshot path from metadata DB does not exist: {path}")
     df = pd.read_csv(path, dtype=_OPTIONS_DTYPES)  # type: ignore[arg-type]
     df["expiration_date"] = pd.to_datetime(df["expiration_date"])
     return df

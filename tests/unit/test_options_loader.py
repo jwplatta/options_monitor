@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from trade_dash.data.options import (
@@ -15,15 +17,118 @@ from trade_dash.data.options import (
     load_options_snapshot,
 )
 
-# ---------------------------------------------------------------------------
-# _parse_filename
-# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def clear_streamlit_caches() -> None:
+    list_expirations.clear()
+    find_latest_snapshots.clear()
+    find_all_snapshots_for_expiry.clear()
+    load_options_snapshot.clear()
+
+
+def _create_metadata_db(path: Path, with_table: bool = True) -> Path:
+    conn = sqlite3.connect(path)
+    if with_table:
+        conn.execute(
+            """
+            CREATE TABLE file_metadata_cache (
+              path TEXT PRIMARY KEY,
+              dataset_type TEXT NOT NULL,
+              provider_name TEXT NOT NULL,
+              ticker TEXT NOT NULL,
+              frequency TEXT,
+              row_count INTEGER NOT NULL,
+              first_observed_at TEXT,
+              last_observed_at TEXT,
+              file_mtime INTEGER NOT NULL,
+              file_size INTEGER NOT NULL,
+              updated_at TEXT NOT NULL,
+              expiration_date TEXT
+            )
+            """
+        )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _insert_metadata_row(
+    db_path: Path,
+    *,
+    csv_path: Path,
+    ticker: str = "SPXW",
+    expiration_date: str,
+    last_observed_at: str,
+    dataset_type: str = "options",
+    provider_name: str = "schwab",
+) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        INSERT INTO file_metadata_cache (
+            path,
+            dataset_type,
+            provider_name,
+            ticker,
+            frequency,
+            row_count,
+            first_observed_at,
+            last_observed_at,
+            file_mtime,
+            file_size,
+            updated_at,
+            expiration_date
+        )
+        VALUES (?, ?, ?, ?, NULL, 1, ?, ?, 0, 0, ?, ?)
+        """,
+        (
+            str(csv_path),
+            dataset_type,
+            provider_name,
+            ticker,
+            last_observed_at,
+            last_observed_at,
+            last_observed_at,
+            expiration_date,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _write_snapshot_csv(path: Path, underlying_price: float = 5200.0) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(
+        [
+            {
+                "contract_type": "CALL",
+                "symbol": "SPXW",
+                "strike": 5200.0,
+                "expiration_date": "2026-04-18",
+                "mark": 10.0,
+                "bid": 9.5,
+                "ask": 10.5,
+                "last": 10.0,
+                "last_size": 1.0,
+                "open_interest": 100.0,
+                "total_volume": 50.0,
+                "delta": 0.5,
+                "gamma": 0.01,
+                "theta": -0.1,
+                "vega": 0.2,
+                "theoretical_volatility": 0.2,
+                "underlying_price": underlying_price,
+            }
+        ]
+    )
+    df.to_csv(path, index=False)
+    return path
 
 
 def test_parse_filename_valid(tmp_path: Path) -> None:
-    p = tmp_path / "SPXW_exp2026-04-15_2026-04-15_13-30-00.csv"
-    p.touch()
-    result = _parse_filename(p)
+    path = tmp_path / "SPXW_exp2026-04-15_2026-04-15_13-30-00.csv"
+    path.touch()
+    result = _parse_filename(path)
     assert result is not None
     exp_date, fetch_dt = result
     assert exp_date == date(2026, 4, 15)
@@ -31,308 +136,255 @@ def test_parse_filename_valid(tmp_path: Path) -> None:
 
 
 def test_parse_filename_too_few_parts(tmp_path: Path) -> None:
-    p = tmp_path / "SPXW_exp2026-04-15.csv"
-    p.touch()
-    assert _parse_filename(p) is None
+    path = tmp_path / "SPXW_exp2026-04-15.csv"
+    path.touch()
+    assert _parse_filename(path) is None
 
 
 def test_parse_filename_bad_date(tmp_path: Path) -> None:
-    p = tmp_path / "SPXW_exp9999-99-99_2026-04-15_13-30-00.csv"
-    p.touch()
-    assert _parse_filename(p) is None
+    path = tmp_path / "SPXW_exp9999-99-99_2026-04-15_13-30-00.csv"
+    path.touch()
+    assert _parse_filename(path) is None
 
 
-# ---------------------------------------------------------------------------
-# find_latest_snapshots — most-recent-snapshot deduplication
-# ---------------------------------------------------------------------------
+def test_list_expirations_deduplicated_and_sorted(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    first = _write_snapshot_csv(tmp_path / "a.csv")
+    second = _write_snapshot_csv(tmp_path / "b.csv")
+    third = _write_snapshot_csv(tmp_path / "c.csv")
+
+    _insert_metadata_row(
+        db_path,
+        csv_path=first,
+        expiration_date="2026-04-17",
+        last_observed_at="2026-04-15T09:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=second,
+        expiration_date="2026-04-15",
+        last_observed_at="2026-04-15T10:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=third,
+        expiration_date="2026-04-17",
+        last_observed_at="2026-04-15T12:00:00",
+    )
+
+    expirations = list_expirations("SPXW", metadata_db_path=db_path)
+    assert expirations == [date(2026, 4, 15), date(2026, 4, 17)]
 
 
-def _touch(directory: Path, name: str) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
-    p = directory / name
-    p.touch()
-    return p
+def test_find_latest_snapshots_picks_most_recent_and_tiebreaks_by_path(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    older = _write_snapshot_csv(tmp_path / "older.csv")
+    tied_low = _write_snapshot_csv(tmp_path / "a.csv")
+    tied_high = _write_snapshot_csv(tmp_path / "z.csv")
 
+    _insert_metadata_row(
+        db_path,
+        csv_path=older,
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-15T09:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=tied_low,
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-15T12:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=tied_high,
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-15T12:00:00",
+    )
 
-def _snapshot_dir(root: Path, folder_date: date) -> Path:
-    return root / f"{folder_date:%Y}" / f"{folder_date:%m}" / f"{folder_date:%d}"
-
-
-def test_find_latest_snapshots_picks_most_recent(tmp_path: Path) -> None:
-    """When three snapshots exist for the same expiry, only the latest is returned."""
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_12-00-00.csv")
-    latest = _touch(folder, "SPXW_exp2026-04-15_2026-04-15_15-30-00.csv")
-
-    result = find_latest_snapshots(
+    snapshots = find_latest_snapshots(
         "SPXW",
-        start_date=date(2026, 4, 15),
+        start_date=date(2026, 4, 18),
         days_out=0,
         include_0dte=True,
-        data_dir=tmp_path,
+        metadata_db_path=db_path,
+    )
+    assert snapshots == {date(2026, 4, 18): tied_high}
+
+
+def test_find_latest_snapshots_returns_one_path_per_expiry_in_window(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    exp_15 = _write_snapshot_csv(tmp_path / "15.csv")
+    exp_16_old = _write_snapshot_csv(tmp_path / "16_old.csv")
+    exp_16_new = _write_snapshot_csv(tmp_path / "16_new.csv")
+    outside = _write_snapshot_csv(tmp_path / "outside.csv")
+
+    _insert_metadata_row(
+        db_path,
+        csv_path=exp_15,
+        expiration_date="2026-04-15",
+        last_observed_at="2026-04-15T10:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=exp_16_old,
+        expiration_date="2026-04-16",
+        last_observed_at="2026-04-15T09:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=exp_16_new,
+        expiration_date="2026-04-16",
+        last_observed_at="2026-04-15T11:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=outside,
+        expiration_date="2026-04-20",
+        last_observed_at="2026-04-15T12:00:00",
     )
 
-    assert list(result.keys()) == [date(2026, 4, 15)]
-    assert result[date(2026, 4, 15)] == latest
-
-
-def test_find_latest_snapshots_returns_one_per_expiry(tmp_path: Path) -> None:
-    """Multiple files per expiry → exactly one path per expiry date in output."""
-    # Two expirations, two snapshots each
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 14))
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-14_10-00-00.csv")
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-14_14-00-00.csv")
-    _touch(folder, "SPXW_exp2026-04-16_2026-04-14_10-00-00.csv")
-    latest_16 = _touch(folder, "SPXW_exp2026-04-16_2026-04-14_16-00-00.csv")
-
-    result = find_latest_snapshots(
+    snapshots = find_latest_snapshots(
         "SPXW",
         start_date=date(2026, 4, 15),
-        days_out=2,
+        days_out=1,
         include_0dte=True,
-        data_dir=tmp_path,
+        metadata_db_path=db_path,
+    )
+    assert snapshots == {
+        date(2026, 4, 15): exp_15,
+        date(2026, 4, 16): exp_16_new,
+    }
+
+
+def test_find_latest_snapshots_respects_include_0dte(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    zero_dte = _write_snapshot_csv(tmp_path / "0dte.csv")
+    future = _write_snapshot_csv(tmp_path / "future.csv")
+
+    _insert_metadata_row(
+        db_path,
+        csv_path=zero_dte,
+        expiration_date="2026-04-15",
+        last_observed_at="2026-04-15T09:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=future,
+        expiration_date="2026-04-16",
+        last_observed_at="2026-04-15T09:05:00",
     )
 
-    assert len(result) == 2
-    assert result[date(2026, 4, 16)] == latest_16
-
-
-def test_find_latest_snapshots_all_expirations_in_window(tmp_path: Path) -> None:
-    """All distinct expiry dates within [start, start+days_out] are included."""
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 14))
-    for d in ["15", "16", "17"]:
-        _touch(folder, f"SPXW_exp2026-04-{d}_2026-04-14_09-00-00.csv")
-    # This one is outside the window
-    _touch(folder, "SPXW_exp2026-04-25_2026-04-14_09-00-00.csv")
-
-    result = find_latest_snapshots(
-        "SPXW",
-        start_date=date(2026, 4, 15),
-        days_out=3,
-        include_0dte=True,
-        data_dir=tmp_path,
-    )
-
-    assert set(result.keys()) == {date(2026, 4, 15), date(2026, 4, 16), date(2026, 4, 17)}
-
-
-def test_find_latest_snapshots_excludes_outside_window(tmp_path: Path) -> None:
-    """Expirations before start_date or after start+days_out are excluded."""
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 14))
-    _touch(folder, "SPXW_exp2026-04-14_2026-04-13_09-00-00.csv")  # before
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-14_09-00-00.csv")  # in window
-    _touch(folder, "SPXW_exp2026-04-22_2026-04-14_09-00-00.csv")  # after
-
-    result = find_latest_snapshots(
-        "SPXW",
-        start_date=date(2026, 4, 15),
-        days_out=5,
-        include_0dte=True,
-        data_dir=tmp_path,
-    )
-
-    assert date(2026, 4, 14) not in result
-    assert date(2026, 4, 22) not in result
-    assert date(2026, 4, 15) in result
-
-
-def test_find_latest_snapshots_0dte_excluded(tmp_path: Path) -> None:
-    """include_0dte=False drops the expiry that matches start_date."""
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")  # 0DTE
-    _touch(folder, "SPXW_exp2026-04-16_2026-04-15_09-00-00.csv")  # future
-
-    without = find_latest_snapshots(
+    without_0dte = find_latest_snapshots(
         "SPXW",
         start_date=date(2026, 4, 15),
         days_out=2,
         include_0dte=False,
-        data_dir=tmp_path,
+        metadata_db_path=db_path,
     )
     with_0dte = find_latest_snapshots(
         "SPXW",
         start_date=date(2026, 4, 15),
         days_out=2,
         include_0dte=True,
-        data_dir=tmp_path,
+        metadata_db_path=db_path,
     )
 
-    assert date(2026, 4, 15) not in without
-    assert date(2026, 4, 15) in with_0dte
+    assert date(2026, 4, 15) not in without_0dte
+    assert with_0dte[date(2026, 4, 15)] == zero_dte
+    assert with_0dte[date(2026, 4, 16)] == future
 
 
-def test_find_latest_snapshots_empty_dir(tmp_path: Path) -> None:
-    result = find_latest_snapshots(
+def test_find_all_snapshots_for_expiry_returns_all_rows_ordered_by_time(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    first = _write_snapshot_csv(tmp_path / "first.csv")
+    second = _write_snapshot_csv(tmp_path / "second.csv")
+    third = _write_snapshot_csv(tmp_path / "third.csv")
+    other = _write_snapshot_csv(tmp_path / "other.csv")
+
+    _insert_metadata_row(
+        db_path,
+        csv_path=first,
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-14T09:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=second,
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-14T12:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=third,
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-15T10:00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=other,
+        ticker="QQQ",
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-15T11:00:00",
+    )
+
+    snapshots = find_all_snapshots_for_expiry(
         "SPXW",
-        start_date=date(2026, 4, 15),
-        days_out=10,
-        data_dir=tmp_path,
+        expiry=date(2026, 4, 18),
+        metadata_db_path=db_path,
     )
-    assert result == {}
-
-
-def test_find_latest_snapshots_ignores_other_symbols(tmp_path: Path) -> None:
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
-    _touch(folder, "QQQ_exp2026-04-15_2026-04-15_09-00-00.csv")
-
-    result = find_latest_snapshots(
-        "SPXW",
-        start_date=date(2026, 4, 15),
-        days_out=0,
-        include_0dte=True,
-        data_dir=tmp_path,
-    )
-    assert list(result.keys()) == [date(2026, 4, 15)]
-
-
-# ---------------------------------------------------------------------------
-# list_expirations
-# ---------------------------------------------------------------------------
-
-
-def test_list_expirations_deduplicated_and_sorted(tmp_path: Path) -> None:
-    """Multiple snapshots per expiry → each expiry appears exactly once, ascending."""
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    for ts in ["09-00-00", "12-00-00", "15-30-00"]:
-        _touch(folder, f"SPXW_exp2026-04-17_2026-04-15_{ts}.csv")
-    _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
-
-    exps = list_expirations("SPXW", data_dir=tmp_path)
-
-    assert exps == [date(2026, 4, 15), date(2026, 4, 17)]
-
-
-def test_find_latest_snapshots_prefers_newest_folder_over_older_times(tmp_path: Path) -> None:
-    older = _snapshot_dir(tmp_path, date(2026, 4, 14))
-    newer = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    old_late = _touch(older, "SPXW_exp2026-04-18_2026-04-14_15-59-59.csv")
-    new_early = _touch(newer, "SPXW_exp2026-04-18_2026-04-15_09-00-00.csv")
-
-    result = find_latest_snapshots(
-        "SPXW",
-        start_date=date(2026, 4, 18),
-        days_out=0,
-        include_0dte=True,
-        data_dir=tmp_path,
-    )
-
-    assert old_late.exists()
-    assert result == {date(2026, 4, 18): new_early}
-
-
-def test_find_latest_snapshots_falls_back_to_older_folder_for_missing_expiry(tmp_path: Path) -> None:
-    older = _snapshot_dir(tmp_path, date(2026, 4, 14))
-    newer = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    older_16 = _touch(older, "SPXW_exp2026-04-16_2026-04-14_15-00-00.csv")
-    newer_15 = _touch(newer, "SPXW_exp2026-04-15_2026-04-15_10-00-00.csv")
-
-    result = find_latest_snapshots(
-        "SPXW",
-        start_date=date(2026, 4, 15),
-        days_out=1,
-        include_0dte=True,
-        data_dir=tmp_path,
-    )
-
-    assert result == {
-        date(2026, 4, 15): newer_15,
-        date(2026, 4, 16): older_16,
-    }
-
-
-def test_find_latest_snapshots_ignores_legacy_root_files(tmp_path: Path) -> None:
-    _touch(tmp_path, "SPXW_exp2026-04-15_2026-04-15_16-00-00.csv")
-    folder = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    nested = _touch(folder, "SPXW_exp2026-04-15_2026-04-15_09-00-00.csv")
-
-    result = find_latest_snapshots(
-        "SPXW",
-        start_date=date(2026, 4, 15),
-        days_out=0,
-        include_0dte=True,
-        data_dir=tmp_path,
-    )
-
-    assert result == {date(2026, 4, 15): nested}
-
-
-def test_list_expirations_empty(tmp_path: Path) -> None:
-    assert list_expirations("SPXW", data_dir=tmp_path) == []
-
-
-def test_find_all_snapshots_for_expiry_across_multiple_sample_dates(tmp_path: Path) -> None:
-    older = _snapshot_dir(tmp_path, date(2026, 4, 14))
-    newer = _snapshot_dir(tmp_path, date(2026, 4, 15))
-    first = _touch(older, "SPXW_exp2026-04-18_2026-04-14_09-00-00.csv")
-    second = _touch(older, "SPXW_exp2026-04-18_2026-04-14_12-00-00.csv")
-    third = _touch(newer, "SPXW_exp2026-04-18_2026-04-15_10-00-00.csv")
-    _touch(newer, "SPXW_exp2026-04-19_2026-04-15_10-00-00.csv")
-    _touch(newer, "QQQ_exp2026-04-18_2026-04-15_10-00-00.csv")
-
-    result = find_all_snapshots_for_expiry("SPXW", expiry=date(2026, 4, 18), data_dir=tmp_path)
-
-    assert result == [
+    assert snapshots == [
         (datetime(2026, 4, 14, 9, 0, 0), first),
         (datetime(2026, 4, 14, 12, 0, 0), second),
         (datetime(2026, 4, 15, 10, 0, 0), third),
     ]
 
 
-# ---------------------------------------------------------------------------
-# Integration-style: live data smoke tests (skip when no data available)
-# ---------------------------------------------------------------------------
+def test_missing_metadata_db_raises_clear_error(tmp_path: Path) -> None:
+    missing_db = tmp_path / "missing.sqlite3"
+    with pytest.raises(FileNotFoundError, match="Tickrake metadata DB not found"):
+        list_expirations("SPXW", metadata_db_path=missing_db)
 
 
-def test_list_expirations_returns_dates() -> None:
-    exps = list_expirations("SPXW")
-    assert len(exps) > 0
-    assert all(isinstance(d, date) for d in exps)
+def test_missing_file_metadata_cache_table_raises_clear_error(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3", with_table=False)
+    with pytest.raises(RuntimeError, match="missing required table 'file_metadata_cache'"):
+        find_latest_snapshots(
+            "SPXW",
+            start_date=date(2026, 4, 15),
+            days_out=5,
+            metadata_db_path=db_path,
+        )
 
 
-def test_find_latest_snapshots_returns_paths() -> None:
-    today = date.today()
-    snapshots = find_latest_snapshots("SPXW", start_date=today, days_out=10)
-    assert isinstance(snapshots, dict)
-    for _, path in snapshots.items():
-        assert path.exists(), f"Snapshot file missing: {path}"
+def test_missing_snapshot_path_is_returned_and_fails_on_load(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    missing_csv = tmp_path / "missing.csv"
+    _insert_metadata_row(
+        db_path,
+        csv_path=missing_csv,
+        expiration_date="2026-04-18",
+        last_observed_at="2026-04-15T10:00:00",
+    )
+
+    snapshots = find_latest_snapshots(
+        "SPXW",
+        start_date=date(2026, 4, 18),
+        days_out=0,
+        metadata_db_path=db_path,
+    )
+    assert snapshots == {date(2026, 4, 18): missing_csv}
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Options snapshot path from metadata DB does not exist",
+    ):
+        load_options_snapshot(missing_csv)
 
 
-def test_find_latest_snapshots_one_path_per_expiry() -> None:
-    """Verify live data: each expiry maps to exactly one path (no duplicates)."""
-    today = date.today()
-    snapshots = find_latest_snapshots("SPXW", start_date=today, days_out=10)
-    # dict keys are inherently unique, but assert path uniqueness too
-    paths = list(snapshots.values())
-    assert len(paths) == len(set(paths)), "Duplicate snapshot paths returned"
-
-
-def test_load_options_snapshot_columns() -> None:
-    today = date.today()
-    snapshots = find_latest_snapshots("SPXW", start_date=today, days_out=5)
-    if not snapshots:
-        pytest.skip("No SPXW snapshots available for today's window")
-    path = next(iter(snapshots.values()))
-    df = load_options_snapshot(path)
+def test_load_options_snapshot_columns(tmp_path: Path) -> None:
+    csv_path = _write_snapshot_csv(tmp_path / "snapshot.csv", underlying_price=5300.0)
+    df = load_options_snapshot(csv_path)
     required = ["contract_type", "strike", "open_interest", "gamma", "underlying_price"]
-    for col in required:
-        assert col in df.columns, f"Missing column: {col}"
-
-
-def test_load_options_snapshot_underlying_price_populated() -> None:
-    """underlying_price must be non-null for all rows (needed for spot)."""
-    today = date.today()
-    snapshots = find_latest_snapshots("SPXW", start_date=today, days_out=5)
-    if not snapshots:
-        pytest.skip("No SPXW snapshots available for today's window")
-    path = next(iter(snapshots.values()))
-    df = load_options_snapshot(path)
-    assert df["underlying_price"].notna().any(), "underlying_price is all null"
-
-
-def test_find_latest_snapshots_0dte_exclusion() -> None:
-    today = date.today()
-    with_0dte = find_latest_snapshots("SPXW", start_date=today, days_out=5, include_0dte=True)
-    without_0dte = find_latest_snapshots("SPXW", start_date=today, days_out=5, include_0dte=False)
-    assert len(without_0dte) <= len(with_0dte)
+    for column in required:
+        assert column in df.columns
+    assert df["underlying_price"].iloc[0] == 5300.0
