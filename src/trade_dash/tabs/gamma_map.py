@@ -33,12 +33,17 @@ from trade_dash.data.options import (
 _GAMMA_MAP_VIEWS = [
     "GEX",
     "Chains",
-    "Chain GEX History",
+    # "Chain GEX History",
     "Intraday",
     "Gamma Heatmap",
     "Maker-Taker",
 ]
-_SINGLE_EXPIRY_VIEWS = {"Chains", "Chain GEX History", "Intraday", "Maker-Taker"}
+_SINGLE_EXPIRY_VIEWS = {
+    "Chains",
+    # "Chain GEX History",
+    "Intraday",
+    "Maker-Taker",
+}
 
 
 def _compute_spot_and_strike_range(options_df: pd.DataFrame, range_pct: float) -> tuple[float, int]:
@@ -615,9 +620,9 @@ def _render_active_gamma_view(
     if active_view == "Chains":
         _render_chains_view(symbol, selected_exp, range_pct, options_dir)
         return
-    if active_view == "Chain GEX History":
-        _render_history_view(symbol, selected_exp, range_pct, options_dir)
-        return
+    # if active_view == "Chain GEX History":
+    #     _render_history_view(symbol, selected_exp, range_pct, options_dir)
+    #     return
     if active_view == "Intraday":
         _render_intraday_view(symbol, selected_exp, range_pct, options_dir)
         return
