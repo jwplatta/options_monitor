@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -32,6 +33,7 @@ _OPTIONS_DTYPES: dict[str, Any] = {
 
 _OPTIONS_DATASET_TYPE = "options"
 _OPTIONS_PROVIDER = "schwab"
+_CHICAGO = ZoneInfo("America/Chicago")
 
 
 def _parse_filename(path: Path) -> tuple[date, datetime] | None:
@@ -83,6 +85,19 @@ def _fetch_metadata_rows(
     return rows
 
 
+def _snapshot_fetch_datetime(path_raw: object, ts_raw: object) -> datetime:
+    path = Path(str(path_raw))
+    parsed = _parse_filename(path)
+    if parsed is not None:
+        _, fetch_dt = parsed
+        return fetch_dt.replace(tzinfo=UTC)
+    return datetime.fromisoformat(str(ts_raw))
+
+
+def _snapshot_fetch_chicago_date(path_raw: object, ts_raw: object) -> date:
+    return _snapshot_fetch_datetime(path_raw, ts_raw).astimezone(_CHICAGO).date()
+
+
 @st.cache_data(ttl=300)
 def list_expirations(
     symbol: str,
@@ -105,6 +120,34 @@ def list_expirations(
         metadata_db_path,
     )
     return [date.fromisoformat(str(row["expiration_date"])) for row in rows]
+
+
+@st.cache_data(ttl=300)
+def list_snapshot_dates_for_expiry(
+    symbol: str,
+    expiry: date,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> list[date]:
+    """Return sorted list of sample dates with snapshots for the given expiry."""
+    del data_dir
+    rows = _fetch_metadata_rows(
+        """
+        SELECT last_observed_at, path
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND expiration_date = ?
+          AND last_observed_at IS NOT NULL
+        ORDER BY last_observed_at ASC
+        """,
+        (_OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol, expiry.isoformat()),
+        metadata_db_path,
+    )
+    return sorted(
+        {_snapshot_fetch_chicago_date(row["path"], row["last_observed_at"]) for row in rows}
+    )
 
 
 @st.cache_data(ttl=30)
@@ -182,6 +225,41 @@ def find_all_snapshots_for_expiry(
     return [
         (datetime.fromisoformat(str(row["last_observed_at"])), Path(str(row["path"])))
         for row in rows
+    ]
+
+
+@st.cache_data(ttl=30)
+def find_snapshots_for_expiry_on_date(
+    symbol: str,
+    expiry: date,
+    sample_date: date,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> list[tuple[datetime, Path]]:
+    """Return all snapshots for a given symbol/expiry/Chicago sample date, sorted by time."""
+    del data_dir
+    rows = _fetch_metadata_rows(
+        """
+        SELECT last_observed_at, path
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND expiration_date = ?
+        ORDER BY last_observed_at ASC, path ASC
+        """,
+        (
+            _OPTIONS_DATASET_TYPE,
+            _OPTIONS_PROVIDER,
+            symbol,
+            expiry.isoformat(),
+        ),
+        metadata_db_path,
+    )
+    return [
+        (_snapshot_fetch_datetime(row["path"], row["last_observed_at"]), Path(str(row["path"])))
+        for row in rows
+        if _snapshot_fetch_chicago_date(row["path"], row["last_observed_at"]) == sample_date
     ]
 
 

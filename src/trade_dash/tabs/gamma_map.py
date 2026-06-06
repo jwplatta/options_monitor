@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -16,7 +17,6 @@ from trade_dash.calc.spread import compute_intraday_spread
 from trade_dash.calc.vol import compute_risk_reversal
 from trade_dash.charts.flow_heatmap import build_flow_heatmap_chart
 from trade_dash.charts.gex_aggregate import build_gex_aggregate_chart
-from trade_dash.charts.gex_heatmap import build_gex_heatmap_chart, compute_gex_history
 from trade_dash.charts.gex_single import build_gex_single_expiry_chart
 from trade_dash.charts.gex_term_structure import build_gex_term_structure_chart
 from trade_dash.charts.maker_taker_bubble import build_maker_taker_bubble_chart
@@ -26,24 +26,36 @@ from trade_dash.charts.vol_skew import build_vol_skew_chart
 from trade_dash.data.options import (
     find_all_snapshots_for_expiry,
     find_latest_snapshots,
+    find_snapshots_for_expiry_on_date,
+    list_snapshot_dates_for_expiry,
     list_expirations,
     load_options_snapshot,
 )
 
+_CHICAGO = ZoneInfo("America/Chicago")
 _GAMMA_MAP_VIEWS = [
     "GEX",
     "Chains",
-    # "Chain GEX History",
+    "Chain GEX History",
     "Intraday",
     "Gamma Heatmap",
     "Maker-Taker",
 ]
 _SINGLE_EXPIRY_VIEWS = {
     "Chains",
-    # "Chain GEX History",
+    "Chain GEX History",
     "Intraday",
     "Maker-Taker",
 }
+
+
+def _to_chicago_time(ts: pd.Timestamp | date | object) -> object:
+    if isinstance(ts, pd.Timestamp):
+        py_ts = ts.to_pydatetime()
+        return py_ts.replace(tzinfo=UTC).astimezone(_CHICAGO).replace(tzinfo=None)
+    if hasattr(ts, "replace"):
+        return ts.replace(tzinfo=UTC).astimezone(_CHICAGO).replace(tzinfo=None)  # type: ignore[union-attr]
+    return ts
 
 
 def _compute_spot_and_strike_range(options_df: pd.DataFrame, range_pct: float) -> tuple[float, int]:
@@ -228,52 +240,85 @@ def _render_history_view(
     range_pct: float,
     options_dir: Path,
 ) -> None:
-    loaded = _load_single_expiry_snapshot_data(symbol, selected_exp, range_pct, options_dir)
-    if loaded is None:
+    sample_dates = list_snapshot_dates_for_expiry(symbol, selected_exp, data_dir=options_dir)
+    if not sample_dates:
         st.warning(f"No {symbol} options snapshots found for {selected_exp.isoformat()}.")
         return
 
-    _, spot, strike_range = loaded
-    hist_key = (symbol, selected_exp.isoformat(), round(spot), strike_range)
-    if st.session_state.get("_gex_hist_key") != hist_key:
-        with st.spinner("Computing GEX history..."):
-            all_expiry_snapshots = find_all_snapshots_for_expiry(
-                symbol, expiry=selected_exp, data_dir=options_dir
-            )
-            top_strikes, timestamps, matrix = compute_gex_history(
-                all_expiry_snapshots, spot=spot, strike_range=strike_range
-            )
-        st.session_state["_gex_hist_key"] = hist_key
-        st.session_state["_gex_hist_top_strikes"] = top_strikes
-        st.session_state["_gex_hist_timestamps"] = timestamps
-        st.session_state["_gex_hist_matrix"] = matrix
-    else:
-        top_strikes = st.session_state["_gex_hist_top_strikes"]
-        timestamps = st.session_state["_gex_hist_timestamps"]
-        matrix = st.session_state["_gex_hist_matrix"]
-
-    x_range = None
-    if timestamps and len(timestamps) > 1:
-        ts_min, ts_max = timestamps[0], timestamps[-1]
-        sel_start, sel_end = st.slider(
-            "Time range",
-            min_value=ts_min,
-            max_value=ts_max,
-            value=(ts_min, ts_max),
-            format="MM/DD HH:mm",
-            key="gm_history_range",
-        )
-        x_range = (sel_start, sel_end)
-
-    fig_heatmap = build_gex_heatmap_chart(
-        top_strikes,
-        timestamps,
-        matrix,
-        spot=spot,
-        title=f"{symbol} GEX History {selected_exp}",
-        x_range=x_range,
+    selected_sample_date = st.date_input(
+        "Sample date",
+        value=sample_dates[-1],
+        min_value=sample_dates[0],
+        max_value=sample_dates[-1],
+        key="gm_history_sample_date",
     )
-    st.plotly_chart(fig_heatmap, use_container_width=True)
+
+    if selected_sample_date not in set(sample_dates):
+        st.warning(
+            f"No {symbol} snapshots found on {selected_sample_date.isoformat()} for "
+            f"{selected_exp.isoformat()}."
+        )
+        return
+
+    history_key = (
+        symbol,
+        selected_exp.isoformat(),
+        selected_sample_date.isoformat(),
+        range_pct,
+    )
+    with st.spinner("Loading historical chain snapshots..."):
+        if st.session_state.get("_gex_history_key") != history_key:
+            snapshots = find_snapshots_for_expiry_on_date(
+                symbol,
+                expiry=selected_exp,
+                sample_date=selected_sample_date,
+                data_dir=options_dir,
+            )
+            st.session_state["_gex_history_key"] = history_key
+            st.session_state["_gex_history_snapshots"] = snapshots
+        else:
+            snapshots = st.session_state["_gex_history_snapshots"]
+
+    if not snapshots:
+        st.warning(
+            f"No {symbol} snapshots found on {selected_sample_date.isoformat()} for "
+            f"{selected_exp.isoformat()}."
+        )
+        return
+
+    local_timestamps = [_to_chicago_time(ts) for ts, _ in snapshots]
+    if st.session_state.get("_gex_history_slider_key") != history_key:
+        st.session_state["_gex_history_slider_key"] = history_key
+        st.session_state["gm_history_snapshot_time"] = local_timestamps[-1]
+
+    snapshot_idx = len(snapshots) - 1
+    if len(snapshots) > 1:
+        if st.session_state.get("gm_history_snapshot_time") not in local_timestamps:
+            st.session_state["gm_history_snapshot_time"] = local_timestamps[-1]
+        selected_ts_local = st.select_slider(
+            "Point in time (CT)",
+            options=local_timestamps,
+            key="gm_history_snapshot_time",
+            format_func=lambda ts: ts.strftime("%Y-%m-%d %H:%M:%S CT"),
+        )
+        snapshot_idx = local_timestamps.index(selected_ts_local)
+
+    selected_ts, selected_path = snapshots[snapshot_idx]
+    selected_ts_local = local_timestamps[snapshot_idx]
+    st.caption(f"Snapshot time: {selected_ts_local.strftime('%Y-%m-%d %H:%M:%S CT')}")
+
+    single_opts = load_options_snapshot(selected_path)
+    spot, strike_range = _compute_spot_and_strike_range(single_opts, range_pct)
+    fig_single = build_gex_single_expiry_chart(
+        single_opts,
+        spot=spot,
+        strike_range=strike_range,
+        title=(
+            f"{symbol} Chain GEX History {selected_exp} "
+            f"({selected_sample_date.isoformat()} {selected_ts_local.strftime('%H:%M:%S')} CT)"
+        ),
+    )
+    st.plotly_chart(fig_single, use_container_width=True)
 
 
 def _render_intraday_view(
@@ -620,9 +665,9 @@ def _render_active_gamma_view(
     if active_view == "Chains":
         _render_chains_view(symbol, selected_exp, range_pct, options_dir)
         return
-    # if active_view == "Chain GEX History":
-    #     _render_history_view(symbol, selected_exp, range_pct, options_dir)
-    #     return
+    if active_view == "Chain GEX History":
+        _render_history_view(symbol, selected_exp, range_pct, options_dir)
+        return
     if active_view == "Intraday":
         _render_intraday_view(symbol, selected_exp, range_pct, options_dir)
         return
@@ -642,9 +687,7 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
 
         with col_ctrl:
             include_0dte = st.toggle("Include 0DTE", value=True, key="gm_0dte")
-            symbol = str(
-                st.selectbox("Symbol", ["SPXW", "SPX", "QQQ", "DIA"], index=0, key="gm_symbol")
-            )
+            symbol = str(st.selectbox("Symbol", ["SPXW", "SPX"], index=0, key="gm_symbol"))
             range_pct = float(
                 st.slider(
                     "Strike range (% of spot)",
