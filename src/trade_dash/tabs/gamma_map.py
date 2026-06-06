@@ -27,14 +27,19 @@ from trade_dash.data.options import (
     find_all_snapshots_for_expiry,
     find_latest_snapshots,
     find_snapshots_for_expiry_on_date,
+    find_snapshots_for_window_on_date,
+    list_expirations_for_window_on_date,
+    list_snapshot_dates,
     list_snapshot_dates_for_expiry,
     list_expirations,
     load_options_snapshot,
+    select_window_snapshots_at_or_before,
 )
 
 _CHICAGO = ZoneInfo("America/Chicago")
 _GAMMA_MAP_VIEWS = [
     "GEX",
+    "GEX History",
     "Chains",
     "Chain GEX History",
     "Intraday",
@@ -164,6 +169,146 @@ def _render_gex_view(
 
     fig_agg = build_gex_aggregate_chart(
         strike_gex, price_gex, spot, title=f"{symbol} GEX Aggregate ({days_out}d)"
+    )
+    st.plotly_chart(fig_agg, use_container_width=True)
+
+
+def _render_gex_history_view(
+    symbol: str,
+    include_0dte: bool,
+    range_pct: float,
+    options_dir: Path,
+) -> None:
+    sample_dates = list_snapshot_dates(symbol, data_dir=options_dir)
+    if not sample_dates:
+        st.warning(f"No historical {symbol} options snapshots found.")
+        return
+
+    col_date, col_window = st.columns([2, 2])
+    with col_date:
+        selected_sample_date = st.date_input(
+            "Sample date",
+            value=sample_dates[-1],
+            min_value=sample_dates[0],
+            max_value=sample_dates[-1],
+            key="gm_gex_history_sample_date",
+        )
+    with col_window:
+        days_out = int(
+            st.radio(
+                "Aggregate window",
+                options=[5, 10, 20, 30],
+                horizontal=True,
+                key="gm_gex_history_days",
+            )
+        )
+
+    if selected_sample_date not in set(sample_dates):
+        st.warning(f"No historical {symbol} snapshots found on {selected_sample_date.isoformat()}.")
+        return
+
+    expiries = list_expirations_for_window_on_date(
+        symbol,
+        sample_date=selected_sample_date,
+        days_out=days_out,
+        include_0dte=include_0dte,
+        data_dir=options_dir,
+    )
+    if not expiries:
+        st.warning(
+            f"No {symbol} expirations found in the {days_out}d window on "
+            f"{selected_sample_date.isoformat()}."
+        )
+        return
+
+    history_key = (
+        symbol,
+        selected_sample_date.isoformat(),
+        days_out,
+        include_0dte,
+    )
+    with st.spinner("Loading historical aggregate snapshots..."):
+        if st.session_state.get("_gex_agg_history_key") != history_key:
+            grouped_snapshots = find_snapshots_for_window_on_date(
+                symbol,
+                sample_date=selected_sample_date,
+                expiries=tuple(expiries),
+                data_dir=options_dir,
+            )
+            st.session_state["_gex_agg_history_key"] = history_key
+            st.session_state["_gex_agg_history_grouped_snapshots"] = grouped_snapshots
+        else:
+            grouped_snapshots = st.session_state["_gex_agg_history_grouped_snapshots"]
+
+    replay_times = sorted({ts for snapshots in grouped_snapshots.values() for ts, _ in snapshots})
+    if not replay_times:
+        st.warning(
+            f"No historical {symbol} snapshots found for the selected aggregate window on "
+            f"{selected_sample_date.isoformat()}."
+        )
+        return
+
+    local_replay_times = [_to_chicago_time(ts) for ts in replay_times]
+    slider_key = (
+        symbol,
+        selected_sample_date.isoformat(),
+        days_out,
+        include_0dte,
+        len(local_replay_times),
+    )
+    if st.session_state.get("_gex_agg_history_slider_key") != slider_key:
+        st.session_state["_gex_agg_history_slider_key"] = slider_key
+        st.session_state["gm_gex_history_snapshot_time"] = local_replay_times[-1]
+
+    if st.session_state.get("gm_gex_history_snapshot_time") not in local_replay_times:
+        st.session_state["gm_gex_history_snapshot_time"] = local_replay_times[-1]
+
+    selected_ts_local = st.select_slider(
+        "Point in time (CT)",
+        options=local_replay_times,
+        key="gm_gex_history_snapshot_time",
+        format_func=lambda ts: ts.strftime("%Y-%m-%d %H:%M:%S CT"),
+    )
+    replay_idx = local_replay_times.index(selected_ts_local)
+    replay_time = replay_times[replay_idx]
+
+    selected_paths = select_window_snapshots_at_or_before(grouped_snapshots, replay_time)
+    if not selected_paths:
+        st.warning(
+            f"No {symbol} expiry snapshots were available at or before "
+            f"{selected_ts_local.strftime('%Y-%m-%d %H:%M:%S CT')}."
+        )
+        return
+
+    all_opts = pd.concat(
+        [load_options_snapshot(path) for _, path in sorted(selected_paths.items())],
+        ignore_index=True,
+    )
+    spot, strike_range = _compute_spot_and_strike_range(all_opts, range_pct)
+    strike_gex = net_gex_by_strike(all_opts, spot=spot, strike_range=strike_range)
+    snap_time = pd.Timestamp(replay_time)
+    if snap_time.tzinfo is not None:
+        snap_time = snap_time.tz_convert("UTC").tz_localize(None)
+    with st.spinner("Computing historical GEX by price grid..."):
+        price_gex = net_gex_by_price(
+            all_opts,
+            spot=spot,
+            snap_time=snap_time,
+            price_range=strike_range,
+        )
+
+    st.caption(
+        f"Snapshot time: {selected_ts_local.strftime('%Y-%m-%d %H:%M:%S CT')} | "
+        f"Expiries: {len(selected_paths)}"
+    )
+    fig_agg = build_gex_aggregate_chart(
+        strike_gex,
+        price_gex,
+        spot,
+        title=(
+            f"{symbol} GEX History ({days_out}d) "
+            f"({selected_sample_date.isoformat()} {selected_ts_local.strftime('%H:%M:%S')} CT)"
+        ),
     )
     st.plotly_chart(fig_agg, use_container_width=True)
 
@@ -652,6 +797,9 @@ def _render_active_gamma_view(
 ) -> None:
     if active_view == "GEX":
         _render_gex_view(symbol, today, include_0dte, range_pct, options_dir)
+        return
+    if active_view == "GEX History":
+        _render_gex_history_view(symbol, include_0dte, range_pct, options_dir)
         return
     if active_view == "Gamma Heatmap":
         _render_gamma_heatmap_view(symbol, today, include_0dte, range_pct, options_dir)

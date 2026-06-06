@@ -123,6 +123,32 @@ def list_expirations(
 
 
 @st.cache_data(ttl=300)
+def list_snapshot_dates(
+    symbol: str,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> list[date]:
+    """Return sorted list of Chicago sample dates with snapshots for the symbol."""
+    del data_dir
+    rows = _fetch_metadata_rows(
+        """
+        SELECT last_observed_at, path
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND last_observed_at IS NOT NULL
+        ORDER BY last_observed_at ASC
+        """,
+        (_OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol),
+        metadata_db_path,
+    )
+    return sorted(
+        {_snapshot_fetch_chicago_date(row["path"], row["last_observed_at"]) for row in rows}
+    )
+
+
+@st.cache_data(ttl=300)
 def list_snapshot_dates_for_expiry(
     symbol: str,
     expiry: date,
@@ -261,6 +287,91 @@ def find_snapshots_for_expiry_on_date(
         for row in rows
         if _snapshot_fetch_chicago_date(row["path"], row["last_observed_at"]) == sample_date
     ]
+
+
+@st.cache_data(ttl=300)
+def list_expirations_for_window_on_date(
+    symbol: str,
+    sample_date: date,
+    days_out: int,
+    include_0dte: bool = True,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> list[date]:
+    """Return expirations in the historical window that have snapshots on sample_date."""
+    del data_dir
+    target_start = sample_date if include_0dte else sample_date + timedelta(days=1)
+    target_end = sample_date + timedelta(days=days_out)
+    if target_end < target_start:
+        return []
+
+    rows = _fetch_metadata_rows(
+        """
+        SELECT expiration_date, last_observed_at, path
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND expiration_date BETWEEN ? AND ?
+          AND last_observed_at IS NOT NULL
+        ORDER BY expiration_date ASC, last_observed_at ASC
+        """,
+        (
+            _OPTIONS_DATASET_TYPE,
+            _OPTIONS_PROVIDER,
+            symbol,
+            target_start.isoformat(),
+            target_end.isoformat(),
+        ),
+        metadata_db_path,
+    )
+    expiries: set[date] = set()
+    for row in rows:
+        if _snapshot_fetch_chicago_date(row["path"], row["last_observed_at"]) != sample_date:
+            continue
+        expiries.add(date.fromisoformat(str(row["expiration_date"])))
+    return sorted(expiries)
+
+
+@st.cache_data(ttl=30)
+def find_snapshots_for_window_on_date(
+    symbol: str,
+    sample_date: date,
+    expiries: tuple[date, ...],
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> dict[date, list[tuple[datetime, Path]]]:
+    """Return per-expiry snapshots for a symbol/sample_date, sorted by timestamp."""
+    del data_dir
+    grouped: dict[date, list[tuple[datetime, Path]]] = {}
+    for expiry in expiries:
+        snapshots = find_snapshots_for_expiry_on_date(
+            symbol,
+            expiry=expiry,
+            sample_date=sample_date,
+            metadata_db_path=metadata_db_path,
+        )
+        if snapshots:
+            grouped[expiry] = snapshots
+    return grouped
+
+
+def select_window_snapshots_at_or_before(
+    grouped_snapshots: dict[date, list[tuple[datetime, Path]]],
+    replay_time: datetime,
+) -> dict[date, Path]:
+    """Select one snapshot per expiry using latest snapshot at or before replay_time."""
+    selected: dict[date, Path] = {}
+    for expiry, snapshots in grouped_snapshots.items():
+        chosen_path: Path | None = None
+        for ts, path in snapshots:
+            if ts <= replay_time:
+                chosen_path = path
+            else:
+                break
+        if chosen_path is not None:
+            selected[expiry] = chosen_path
+    return selected
 
 
 @st.cache_data(ttl=3600)
