@@ -16,3 +16,4 @@ htmlcov/
 .claude/worktrees/
 .gemini/tool-log.txt
 .gemini/skills
+.claude/settings.local.json
