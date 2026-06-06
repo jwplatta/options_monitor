@@ -107,6 +107,32 @@ def list_expirations(
     return [date.fromisoformat(str(row["expiration_date"])) for row in rows]
 
 
+@st.cache_data(ttl=300)
+def list_snapshot_dates_for_expiry(
+    symbol: str,
+    expiry: date,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> list[date]:
+    """Return sorted list of sample dates with snapshots for the given expiry."""
+    del data_dir
+    rows = _fetch_metadata_rows(
+        """
+        SELECT DISTINCT DATE(last_observed_at) AS sample_date
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND expiration_date = ?
+          AND last_observed_at IS NOT NULL
+        ORDER BY sample_date ASC
+        """,
+        (_OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol, expiry.isoformat()),
+        metadata_db_path,
+    )
+    return [date.fromisoformat(str(row["sample_date"])) for row in rows]
+
+
 @st.cache_data(ttl=30)
 def find_latest_snapshots(
     symbol: str,
@@ -177,6 +203,42 @@ def find_all_snapshots_for_expiry(
         ORDER BY last_observed_at ASC, path ASC
         """,
         (_OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol, expiry.isoformat()),
+        metadata_db_path,
+    )
+    return [
+        (datetime.fromisoformat(str(row["last_observed_at"])), Path(str(row["path"])))
+        for row in rows
+    ]
+
+
+@st.cache_data(ttl=30)
+def find_snapshots_for_expiry_on_date(
+    symbol: str,
+    expiry: date,
+    sample_date: date,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> list[tuple[datetime, Path]]:
+    """Return all snapshots for a given symbol/expiry/sample date, sorted by time."""
+    del data_dir
+    rows = _fetch_metadata_rows(
+        """
+        SELECT last_observed_at, path
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND expiration_date = ?
+          AND DATE(last_observed_at) = ?
+        ORDER BY last_observed_at ASC, path ASC
+        """,
+        (
+            _OPTIONS_DATASET_TYPE,
+            _OPTIONS_PROVIDER,
+            symbol,
+            expiry.isoformat(),
+            sample_date.isoformat(),
+        ),
         metadata_db_path,
     )
     return [
