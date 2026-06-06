@@ -376,6 +376,36 @@ def test_list_snapshot_dates_for_expiry_returns_distinct_sorted_dates(tmp_path: 
     assert sample_dates == [date(2026, 4, 14), date(2026, 4, 15)]
 
 
+def test_list_snapshot_dates_for_expiry_uses_chicago_market_date(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    prev_evening = _write_snapshot_csv(
+        tmp_path / "SPXW_exp2026-06-05_2026-06-03_01-00-43.csv"
+    )
+    market_open = _write_snapshot_csv(
+        tmp_path / "SPXW_exp2026-06-05_2026-06-03_13-30-00.csv"
+    )
+
+    _insert_metadata_row(
+        db_path,
+        csv_path=prev_evening,
+        expiration_date="2026-06-05",
+        last_observed_at="2026-06-03T00:00:43+00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=market_open,
+        expiration_date="2026-06-05",
+        last_observed_at="2026-06-03T13:30:00+00:00",
+    )
+
+    sample_dates = list_snapshot_dates_for_expiry(
+        "SPXW",
+        expiry=date(2026, 6, 5),
+        metadata_db_path=db_path,
+    )
+    assert sample_dates == [date(2026, 6, 2), date(2026, 6, 3)]
+
+
 def test_find_snapshots_for_expiry_on_date_filters_and_orders_rows(tmp_path: Path) -> None:
     db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
     first = _write_snapshot_csv(tmp_path / "first.csv")
@@ -418,6 +448,49 @@ def test_find_snapshots_for_expiry_on_date_filters_and_orders_rows(tmp_path: Pat
     assert snapshots == [
         (datetime(2026, 4, 15, 9, 0, 0), first),
         (datetime(2026, 4, 15, 12, 0, 0), second),
+    ]
+
+
+def test_find_snapshots_for_expiry_on_date_uses_chicago_market_date(tmp_path: Path) -> None:
+    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
+    prev_evening = _write_snapshot_csv(
+        tmp_path / "SPXW_exp2026-06-05_2026-06-03_01-00-43.csv"
+    )
+    market_open = _write_snapshot_csv(
+        tmp_path / "SPXW_exp2026-06-05_2026-06-03_13-30-00.csv"
+    )
+    market_midday = _write_snapshot_csv(
+        tmp_path / "SPXW_exp2026-06-05_2026-06-03_18-00-00.csv"
+    )
+
+    _insert_metadata_row(
+        db_path,
+        csv_path=prev_evening,
+        expiration_date="2026-06-05",
+        last_observed_at="2026-06-03T00:00:43+00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=market_open,
+        expiration_date="2026-06-05",
+        last_observed_at="2026-06-03T13:30:00+00:00",
+    )
+    _insert_metadata_row(
+        db_path,
+        csv_path=market_midday,
+        expiration_date="2026-06-05",
+        last_observed_at="2026-06-03T18:00:00+00:00",
+    )
+
+    snapshots = find_snapshots_for_expiry_on_date(
+        "SPXW",
+        expiry=date(2026, 6, 5),
+        sample_date=date(2026, 6, 3),
+        metadata_db_path=db_path,
+    )
+    assert snapshots == [
+        (datetime.fromisoformat("2026-06-03T13:30:00+00:00"), market_open),
+        (datetime.fromisoformat("2026-06-03T18:00:00+00:00"), market_midday),
     ]
 
 

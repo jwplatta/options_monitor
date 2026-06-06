@@ -286,13 +286,18 @@ def _render_history_view(
         )
         return
 
-    snapshot_idx = len(snapshots) - 1
     local_timestamps = [_to_chicago_time(ts) for ts, _ in snapshots]
+    if st.session_state.get("_gex_history_slider_key") != history_key:
+        st.session_state["_gex_history_slider_key"] = history_key
+        st.session_state["gm_history_snapshot_time"] = local_timestamps[-1]
+
+    snapshot_idx = len(snapshots) - 1
     if len(snapshots) > 1:
+        if st.session_state.get("gm_history_snapshot_time") not in local_timestamps:
+            st.session_state["gm_history_snapshot_time"] = local_timestamps[-1]
         selected_ts_local = st.select_slider(
             "Point in time (CT)",
             options=local_timestamps,
-            value=local_timestamps[-1],
             key="gm_history_snapshot_time",
             format_func=lambda ts: ts.strftime("%Y-%m-%d %H:%M:%S CT"),
         )
