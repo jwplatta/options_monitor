@@ -5,9 +5,10 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from trade_dash import app
-from trade_dash.tabs import gamma_map
+from trade_dash.tabs import gamma_map, history
 
 
 def test_dashboard_router_only_invokes_selected_panel(monkeypatch) -> None:
@@ -20,9 +21,27 @@ def test_dashboard_router_only_invokes_selected_panel(monkeypatch) -> None:
         "render_gamma_map_tab",
         lambda options_dir, candle_dir: calls.append("gamma"),
     )
+    monkeypatch.setattr(
+        app,
+        "render_history_tab",
+        lambda options_dir, candle_dir: calls.append("history"),
+    )
 
     app._render_active_dashboard_tab("Vol")
     assert calls == ["vol"]
+
+
+def test_dashboard_router_dispatches_history_panel(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        app,
+        "render_history_tab",
+        lambda options_dir, candle_dir: calls.append("history"),
+    )
+
+    app._render_active_dashboard_tab("History")
+    assert calls == ["history"]
 
 
 def test_gamma_router_only_invokes_selected_view(monkeypatch) -> None:
@@ -35,18 +54,8 @@ def test_gamma_router_only_invokes_selected_view(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         gamma_map,
-        "_render_gex_history_view",
-        lambda symbol, include_0dte, range_pct, options_dir: calls.append("gex_history"),
-    )
-    monkeypatch.setattr(
-        gamma_map,
         "_render_chains_view",
         lambda symbol, selected_exp, range_pct, options_dir: calls.append("chains"),
-    )
-    monkeypatch.setattr(
-        gamma_map,
-        "_render_history_view",
-        lambda symbol, selected_exp, range_pct, options_dir: calls.append("history"),
     )
     monkeypatch.setattr(
         gamma_map,
@@ -76,19 +85,40 @@ def test_gamma_router_only_invokes_selected_view(monkeypatch) -> None:
     assert calls == ["intraday"]
 
 
-def test_gamma_router_dispatches_history_view(monkeypatch) -> None:
+def test_gamma_router_rejects_chain_history_view(monkeypatch) -> None:
+    with pytest.raises(ValueError, match="Unknown Gamma Map view"):
+        gamma_map._render_active_gamma_view(
+            active_view="Chain GEX History",
+            symbol="SPXW",
+            today=date(2026, 4, 15),
+            include_0dte=True,
+            range_pct=5.0,
+            selected_exp_str="2026-04-18",
+            options_dir=Path("/tmp/options"),
+        )
+
+
+def test_gamma_router_rejects_aggregate_history_view(monkeypatch) -> None:
+    with pytest.raises(ValueError, match="Unknown Gamma Map view"):
+        gamma_map._render_active_gamma_view(
+            active_view="GEX History",
+            symbol="SPXW",
+            today=date(2026, 4, 15),
+            include_0dte=True,
+            range_pct=5.0,
+            selected_exp_str=None,
+            options_dir=Path("/tmp/options"),
+        )
+
+
+def test_history_router_dispatches_chain_history_view(monkeypatch) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr(
-        gamma_map,
-        "_render_history_view",
-        lambda symbol, selected_exp, range_pct, options_dir: calls.append("history"),
-    )
+    monkeypatch.setattr(history, "_render_history_view", lambda *args: calls.append("history"))
 
-    gamma_map._render_active_gamma_view(
+    history._render_active_history_view(
         active_view="Chain GEX History",
         symbol="SPXW",
-        today=date(2026, 4, 15),
         include_0dte=True,
         range_pct=5.0,
         selected_exp_str="2026-04-18",
@@ -97,25 +127,86 @@ def test_gamma_router_dispatches_history_view(monkeypatch) -> None:
     assert calls == ["history"]
 
 
-def test_gamma_router_dispatches_aggregate_history_view(monkeypatch) -> None:
+def test_history_router_dispatches_aggregate_history_view(monkeypatch) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(
-        gamma_map,
+        history,
         "_render_gex_history_view",
-        lambda symbol, include_0dte, range_pct, options_dir: calls.append("gex_history"),
+        lambda *args: calls.append("gex_history"),
     )
 
-    gamma_map._render_active_gamma_view(
+    history._render_active_history_view(
         active_view="GEX History",
         symbol="SPXW",
-        today=date(2026, 4, 15),
         include_0dte=True,
         range_pct=5.0,
         selected_exp_str=None,
         options_dir=Path("/tmp/options"),
     )
     assert calls == ["gex_history"]
+
+
+def test_render_history_tab_only_requests_single_expiry_for_chain_history(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    selectbox_calls: list[str] = []
+
+    monkeypatch.setattr(history.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(history.st, "fragment", lambda **kwargs: lambda func: func)
+    monkeypatch.setattr(history.st, "columns", lambda spec: (nullcontext(), nullcontext()))
+    monkeypatch.setattr(history.st, "toggle", lambda *args, **kwargs: True)
+    monkeypatch.setattr(history.st, "slider", lambda *args, **kwargs: 5.0)
+    monkeypatch.setattr(history.st, "divider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        history.st,
+        "segmented_control",
+        lambda *args, **kwargs: "Chain GEX History",
+    )
+
+    def _selectbox(label, options, index=0, key=None):
+        selectbox_calls.append(label)
+        return options[index]
+
+    monkeypatch.setattr(history.st, "selectbox", _selectbox)
+    monkeypatch.setattr(
+        history,
+        "_select_single_expiry",
+        lambda symbol, today, options_dir: "2026-04-18",
+    )
+    monkeypatch.setattr(history, "_render_active_history_view", lambda **kwargs: None)
+
+    history.render_history_tab(options_dir=tmp_path, candle_dir=tmp_path)
+
+    assert selectbox_calls == ["Symbol"]
+
+
+def test_render_history_tab_skips_single_expiry_for_aggregate_history(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    selected_exp_calls: list[str] = []
+
+    monkeypatch.setattr(history.st, "subheader", lambda *args, **kwargs: None)
+    monkeypatch.setattr(history.st, "fragment", lambda **kwargs: lambda func: func)
+    monkeypatch.setattr(history.st, "columns", lambda spec: (nullcontext(), nullcontext()))
+    monkeypatch.setattr(history.st, "toggle", lambda *args, **kwargs: True)
+    monkeypatch.setattr(history.st, "slider", lambda *args, **kwargs: 5.0)
+    monkeypatch.setattr(history.st, "segmented_control", lambda *args, **kwargs: "GEX History")
+    monkeypatch.setattr(
+        history.st, "selectbox", lambda label, options, index=0, key=None: options[index]
+    )
+    monkeypatch.setattr(
+        history,
+        "_select_single_expiry",
+        lambda symbol, today, options_dir: selected_exp_calls.append(symbol) or "2026-04-18",
+    )
+    monkeypatch.setattr(history, "_render_active_history_view", lambda **kwargs: None)
+
+    history.render_history_tab(options_dir=tmp_path, candle_dir=tmp_path)
+
+    assert selected_exp_calls == []
 
 
 def test_gex_view_does_not_touch_history_snapshot_loader(monkeypatch, tmp_path: Path) -> None:
@@ -185,8 +276,9 @@ def test_history_view_uses_selected_snapshot_and_reuses_single_expiry_chart(
     monkeypatch.setattr(
         gamma_map,
         "build_gex_single_expiry_chart",
-        lambda opts, spot, strike_range, title: chart_calls.append((spot, strike_range, title))
-        or object(),
+        lambda opts, spot, strike_range, title: (
+            chart_calls.append((spot, strike_range, title)) or object()
+        ),
     )
     monkeypatch.setattr(gamma_map.st, "date_input", lambda *args, **kwargs: date(2026, 4, 15))
     monkeypatch.setattr(
@@ -213,7 +305,9 @@ def test_history_view_uses_selected_snapshot_and_reuses_single_expiry_chart(
     assert plotted
 
 
-def test_history_view_warns_when_selected_date_has_no_snapshots(monkeypatch, tmp_path: Path) -> None:
+def test_history_view_warns_when_selected_date_has_no_snapshots(
+    monkeypatch, tmp_path: Path
+) -> None:
     warnings: list[str] = []
 
     monkeypatch.setattr(
@@ -265,7 +359,9 @@ def test_gex_history_view_uses_at_or_before_snapshot_selection(monkeypatch, tmp_
         "find_snapshots_for_window_on_date",
         lambda symbol, sample_date, expiries, data_dir: {
             date(2026, 4, 15): [(pd.Timestamp("2026-04-15T14:00:00+00:00").to_pydatetime(), first)],
-            date(2026, 4, 16): [(pd.Timestamp("2026-04-15T14:01:00+00:00").to_pydatetime(), second)],
+            date(2026, 4, 16): [
+                (pd.Timestamp("2026-04-15T14:01:00+00:00").to_pydatetime(), second)
+            ],
         },
     )
     monkeypatch.setattr(
@@ -314,7 +410,7 @@ def test_render_gamma_map_tab_limits_symbol_options(monkeypatch, tmp_path: Path)
     captured_options: list[str] = []
 
     monkeypatch.setattr(gamma_map.st, "subheader", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gamma_map.st, "fragment", lambda **kwargs: (lambda func: func))
+    monkeypatch.setattr(gamma_map.st, "fragment", lambda **kwargs: lambda func: func)
     monkeypatch.setattr(gamma_map.st, "columns", lambda spec: (nullcontext(), nullcontext()))
     monkeypatch.setattr(gamma_map.st, "toggle", lambda *args, **kwargs: True)
 

@@ -28,10 +28,10 @@ from trade_dash.data.options import (
     find_latest_snapshots,
     find_snapshots_for_expiry_on_date,
     find_snapshots_for_window_on_date,
+    list_expirations,
     list_expirations_for_window_on_date,
     list_snapshot_dates,
     list_snapshot_dates_for_expiry,
-    list_expirations,
     load_options_snapshot,
     select_window_snapshots_at_or_before,
 )
@@ -39,16 +39,13 @@ from trade_dash.data.options import (
 _CHICAGO = ZoneInfo("America/Chicago")
 _GAMMA_MAP_VIEWS = [
     "GEX",
-    "GEX History",
     "Chains",
-    "Chain GEX History",
     "Intraday",
     "Gamma Heatmap",
     "Maker-Taker",
 ]
 _SINGLE_EXPIRY_VIEWS = {
     "Chains",
-    "Chain GEX History",
     "Intraday",
     "Maker-Taker",
 }
@@ -798,12 +795,11 @@ def _render_active_gamma_view(
     if active_view == "GEX":
         _render_gex_view(symbol, today, include_0dte, range_pct, options_dir)
         return
-    if active_view == "GEX History":
-        _render_gex_history_view(symbol, include_0dte, range_pct, options_dir)
-        return
     if active_view == "Gamma Heatmap":
         _render_gamma_heatmap_view(symbol, today, include_0dte, range_pct, options_dir)
         return
+    if active_view not in _SINGLE_EXPIRY_VIEWS:
+        raise ValueError(f"Unknown Gamma Map view: {active_view}")
 
     if selected_exp_str is None:
         st.warning(f"No expirations available for {symbol}.")
@@ -812,9 +808,6 @@ def _render_active_gamma_view(
     selected_exp = date.fromisoformat(selected_exp_str)
     if active_view == "Chains":
         _render_chains_view(symbol, selected_exp, range_pct, options_dir)
-        return
-    if active_view == "Chain GEX History":
-        _render_history_view(symbol, selected_exp, range_pct, options_dir)
         return
     if active_view == "Intraday":
         _render_intraday_view(symbol, selected_exp, range_pct, options_dir)

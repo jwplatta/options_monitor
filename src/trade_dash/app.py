@@ -6,10 +6,11 @@ import streamlit as st
 
 from trade_dash.config import CANDLE_DIR, OPTIONS_DIR
 from trade_dash.tabs.gamma_map import render_gamma_map_tab
+from trade_dash.tabs.history import render_history_tab
 from trade_dash.tabs.regime import render_regime_tab
 from trade_dash.tabs.vol import render_vol_tab
 
-_TOP_LEVEL_TABS = ["Regime", "Vol", "Gamma Map"]
+_TOP_LEVEL_TABS = ["Regime", "Vol", "Gamma Map", "History"]
 
 
 def _render_active_dashboard_tab(active_tab: str) -> None:
@@ -22,6 +23,9 @@ def _render_active_dashboard_tab(active_tab: str) -> None:
         return
     if active_tab == "Gamma Map":
         render_gamma_map_tab(options_dir=OPTIONS_DIR, candle_dir=CANDLE_DIR)
+        return
+    if active_tab == "History":
+        render_history_tab(options_dir=OPTIONS_DIR, candle_dir=CANDLE_DIR)
         return
     raise ValueError(f"Unknown dashboard tab: {active_tab}")
 
