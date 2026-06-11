@@ -1,26 +1,32 @@
-"""Regime tab: direction and stability analysis."""
+"""Regime tab: candlestick price chart for ES Futures or SPX."""
 
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from trade_dash.calc.ma import validate_windows
-from trade_dash.charts.price import build_sma_price_chart
-from trade_dash.charts.volume import build_sma_volume_chart
-from trade_dash.config import SCHWAB_CANDLE_DIR
+from trade_dash.calc.gex import (
+    find_aggregate_wall_strikes,
+    find_raw_wall_strikes,
+    find_zero_gamma_level,
+    net_gex_by_price,
+)
+from trade_dash.charts.price import build_candlestick_chart
+from trade_dash.config import OPTIONS_DIR, SCHWAB_CANDLE_DIR
 from trade_dash.data.candles import list_available_dates, load_candles
+from trade_dash.data.options import find_latest_snapshots, load_options_snapshot
 
 _INTRADAY_FREQS = {"1min", "5min", "30min"}
-_BARS_PER_DAY = {"1min": 390, "5min": 78, "30min": 13, "day": 1}
+
+_TICKER_OPTIONS = ["ES Futures", "SPX"]
+_TICKER_SYMBOL = {"ES Futures": "^ES", "SPX": "SPX"}
 
 
-def _x_range(df: pd.DataFrame, start_sel: date, end_sel: date, freq: str) -> list:
-    """Return the xaxis range to trim off the warmup period."""
+def _x_range(df: pd.DataFrame, start_sel: date, end_sel: date, freq: str) -> list[object]:
+    """Return xaxis range to align with the selected display window."""
     if freq in _INTRADAY_FREQS:
         start_ts = pd.Timestamp(start_sel, tz="UTC")
         mask = df["datetime"] >= start_ts
@@ -33,65 +39,121 @@ def _x_range(df: pd.DataFrame, start_sel: date, end_sel: date, freq: str) -> lis
         ]
 
 
+def _load_gex_levels(
+    symbol: str,
+    today: date,
+    days_out: int,
+    options_dir: Path,
+    include_0dte: bool = True,
+) -> dict[str, float | None]:
+    """Load options snapshot and compute wall + ZGL levels. Returns empty dict on failure."""
+    snapshots = find_latest_snapshots(
+        symbol, start_date=today, days_out=days_out, include_0dte=include_0dte, data_dir=options_dir
+    )
+    if not snapshots:
+        return {}
+
+    all_opts = pd.concat(
+        [load_options_snapshot(p) for p in snapshots.values()], ignore_index=True
+    )
+    spot_series = pd.to_numeric(all_opts["underlying_price"], errors="coerce").dropna()
+    if spot_series.empty:
+        return {}
+    spot = float(spot_series.iloc[0])
+    strike_range = round(spot * 0.05)
+
+    anchor_ts = pd.Timestamp(today)
+    raw_call, raw_put = find_raw_wall_strikes(all_opts, spot=spot, strike_range=strike_range)
+    dw_call, dw_put = find_aggregate_wall_strikes(
+        all_opts, spot=spot, strike_range=strike_range,
+        method="distance_weighted_aggregate", anchor_date=anchor_ts,
+    )
+    cl_call, cl_put = find_aggregate_wall_strikes(
+        all_opts, spot=spot, strike_range=strike_range,
+        method="per_expiry_clustering", anchor_date=anchor_ts,
+    )
+    price_gex = net_gex_by_price(all_opts, spot=spot, price_range=strike_range)
+    zgl = find_zero_gamma_level(
+        price_gex["price"].to_numpy(), price_gex["net_gex"].to_numpy()
+    )
+
+    return {
+        "raw_call_wall": raw_call,
+        "raw_put_wall": raw_put,
+        "dw_call_wall": dw_call,
+        "dw_put_wall": dw_put,
+        "cluster_call_wall": cl_call,
+        "cluster_put_wall": cl_put,
+        "zero_gamma": zgl,
+    }
+
+
 def render_regime_tab(candle_dir: Path) -> None:
     st.subheader("Regime")
 
     col_ctrl, col_chart = st.columns([1, 3])
 
     with col_ctrl:
+        ticker_label = (
+            st.selectbox("Ticker", _TICKER_OPTIONS, index=0, key="reg_ticker") or "ES Futures"
+        )
         freq = (
             st.selectbox("Frequency", ["1min", "5min", "30min", "day"], index=1, key="reg_freq")
             or "5min"
         )
-        fast_window = int(st.number_input("Fast MA", min_value=1, value=9, key="reg_fast"))
-        slow_window = int(st.number_input("Slow MA", min_value=2, value=30, key="reg_slow"))
+
+        symbol = _TICKER_SYMBOL[ticker_label]
+        data_dir = SCHWAB_CANDLE_DIR if ticker_label == "ES Futures" else candle_dir
+
+        # Aggregate window + 0DTE toggle — only relevant for SPX (options data)
+        days_out: int | None = None
+        include_0dte: bool = True
+        if ticker_label == "SPX":
+            days_out = int(
+                st.radio(
+                    "Aggregate window",
+                    options=[5, 10, 20, 30],
+                    horizontal=True,
+                    key="reg_agg_window",
+                )
+            )
+            include_0dte = st.toggle("Include 0DTE", value=True, key="reg_0dte")
 
         try:
-            validate_windows(fast_window, slow_window)
-        except ValueError as e:
-            st.error(str(e))
-            return
-
-        try:
-            start_avail, end_avail = list_available_dates("SPX", str(freq), data_dir=candle_dir)
+            start_avail, end_avail = list_available_dates(symbol, str(freq), data_dir=data_dir)
         except FileNotFoundError:
-            st.error(f"No SPX data for frequency: {freq}")
+            st.error(f"No {ticker_label} data for frequency: {freq}")
             return
 
-        today = date.today()
-        default_start = max(date(today.year, today.month, 1), start_avail.date())
+        if freq in _INTRADAY_FREQS:
+            sel_date = st.date_input("Date", value=end_avail.date(), key="reg_date")
+            start_sel = sel_date
+            end_sel = sel_date + timedelta(days=1)
+        else:
+            today = date.today()
+            default_start = max(date(today.year, today.month, 1), start_avail.date())
+            start_sel = st.date_input("Start", value=default_start, key="reg_start")
+            end_sel = st.date_input("End", value=end_avail.date(), key="reg_end")
 
-        start_sel = st.date_input("Start", value=default_start, key="reg_start")
-        end_sel = st.date_input("End", value=end_avail.date(), key="reg_end")
+    df = load_candles(symbol, str(freq), start=start_sel, end=end_sel, data_dir=data_dir)
 
-    # Load with warmup so MAs are valid at the start of the display range.
-    # Scale warmup by frequency: intraday bars are small fractions of a day,
-    # so slow_window bars may only need a few calendar days, not slow_window*3.
-    bars_per_day = _BARS_PER_DAY.get(str(freq), 1)
-    trading_days_needed = max(1, math.ceil(slow_window / bars_per_day))
-    warmup_days = trading_days_needed * 2 + 4  # 2× buffer + weekend/holiday padding
-    warmup_start = date.fromisoformat(str(start_sel)) - timedelta(days=warmup_days)
-
-    spx = load_candles("SPX", str(freq), start=warmup_start, end=end_sel, data_dir=candle_dir)
-
-    if spx.empty:
+    if df.empty:
         with col_chart:
             st.warning("No data for selected range.")
         return
 
-    with col_chart:
-        try:
-            es = load_candles(
-                "^ES", str(freq), start=warmup_start, end=end_sel, data_dir=SCHWAB_CANDLE_DIR
-            )
-            vol_fig = build_sma_volume_chart(es, title=f"ES Volume ({freq})", freq=str(freq))
-            vol_fig.update_xaxes(range=_x_range(es, start_sel, end_sel, str(freq)))
-            st.plotly_chart(vol_fig, use_container_width=True)
-        except FileNotFoundError:
-            st.info("ES volume data not available.")
+    # Load GEX levels for SPX
+    gex_levels: dict[str, float | None] = {}
+    if ticker_label == "SPX" and days_out is not None:
+        with st.spinner("Loading GEX levels..."):
+            gex_levels = _load_gex_levels("SPXW", date.today(), days_out, OPTIONS_DIR, include_0dte)
 
-        price_fig = build_sma_price_chart(
-            spx, fast_window, slow_window, title=f"SPX ({freq})", freq=str(freq)
+    with col_chart:
+        fig = build_candlestick_chart(
+            df,
+            title=f"{ticker_label} ({freq})",
+            freq=str(freq),
+            **gex_levels,
         )
-        price_fig.update_xaxes(range=_x_range(spx, start_sel, end_sel, str(freq)))
-        st.plotly_chart(price_fig, use_container_width=True)
+        fig.update_xaxes(range=_x_range(df, start_sel, end_sel, str(freq)))
+        st.plotly_chart(fig, use_container_width=True)
