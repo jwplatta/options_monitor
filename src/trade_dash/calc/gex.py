@@ -9,6 +9,116 @@ import numpy.typing as npt
 import pandas as pd
 
 
+def _side_gex_rows(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float,
+) -> pd.DataFrame:
+    """Return side-specific GEX rows within the visible strike range."""
+    df = opts.copy()
+    df["gamma"] = pd.to_numeric(df["gamma"], errors="coerce")
+    df["open_interest"] = pd.to_numeric(df["open_interest"], errors="coerce")
+    df["K"] = pd.to_numeric(df["strike"], errors="coerce")
+    df["contract_type"] = df["contract_type"].astype(str).str.upper()
+    df = df.dropna(subset=["gamma", "open_interest", "K", "contract_type"])
+    df = df[df["open_interest"] > 0]
+
+    mask = (df["K"] >= spot - strike_range) & (df["K"] <= spot + strike_range)
+    df = df[mask].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["K", "gex", "expiration_date"])
+
+    sign = df["contract_type"].map({"CALL": 1.0, "PUT": -1.0})
+    df["gex"] = df["gamma"] * df["open_interest"] * (spot**2) * sign
+    df = df.dropna(subset=["gex"])
+    if "expiration_date" in df.columns:
+        df["expiration_date"] = pd.to_datetime(df["expiration_date"], errors="coerce").dt.date
+    else:
+        df["expiration_date"] = pd.NaT
+    return df
+
+
+def _aggregate_side_gex_by_strike(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float,
+    anchor_date: pd.Timestamp | None = None,
+    weight_by_distance: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return aggregated call and put GEX-by-strike frames within the visible range."""
+    df = _side_gex_rows(opts, spot=spot, strike_range=strike_range)
+    if df.empty:
+        empty = pd.DataFrame(columns=["K", "gex"])
+        return empty, empty
+
+    if weight_by_distance:
+        anchor = (
+            anchor_date.date()
+            if isinstance(anchor_date, pd.Timestamp)
+            else anchor_date
+        )
+        if anchor is not None and df["expiration_date"].notna().any():
+            dte = (
+                pd.to_datetime(df["expiration_date"], errors="coerce").dt.date.map(
+                    lambda exp: max((exp - anchor).days, 1) if pd.notna(exp) else 1
+                )
+            )
+            df["weighted_gex"] = df["gex"] / dte.astype(float)
+        else:
+            df["weighted_gex"] = df["gex"]
+        value_col = "weighted_gex"
+    else:
+        value_col = "gex"
+
+    calls = df[df["contract_type"] == "CALL"].groupby("K", as_index=False)[value_col].sum()
+    puts = df[df["contract_type"] == "PUT"].groupby("K", as_index=False)[value_col].sum()
+    return calls.rename(columns={value_col: "gex"}), puts.rename(columns={value_col: "gex"})
+
+
+def _clustered_wall_candidates(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return clustered per-expiry OTM wall candidates for calls and puts."""
+    df = _side_gex_rows(opts, spot=spot, strike_range=strike_range)
+    if df.empty or df["expiration_date"].isna().all():
+        empty = pd.DataFrame(columns=["K", "count", "abs_gex"])
+        return empty, empty
+
+    calls = df[(df["contract_type"] == "CALL") & (df["K"] >= spot)].copy()
+    puts = df[(df["contract_type"] == "PUT") & (df["K"] <= spot)].copy()
+
+    call_walls = pd.DataFrame(columns=["K", "gex"])
+    put_walls = pd.DataFrame(columns=["K", "gex"])
+    if not calls.empty:
+        per_exp_call = calls.groupby(["expiration_date", "K"], as_index=False)["gex"].sum()
+        call_walls = (
+            per_exp_call.sort_values(["expiration_date", "gex"], ascending=[True, False])
+            .groupby("expiration_date", as_index=False)
+            .first()[["K", "gex"]]
+        )
+    if not puts.empty:
+        per_exp_put = puts.groupby(["expiration_date", "K"], as_index=False)["gex"].sum()
+        put_walls = (
+            per_exp_put.sort_values(["expiration_date", "gex"], ascending=[True, True])
+            .groupby("expiration_date", as_index=False)
+            .first()[["K", "gex"]]
+        )
+
+    call_clusters = (
+        call_walls.assign(abs_gex=lambda d: d["gex"].abs())
+        .groupby("K", as_index=False)
+        .agg(count=("K", "size"), abs_gex=("abs_gex", "sum"))
+    )
+    put_clusters = (
+        put_walls.assign(abs_gex=lambda d: d["gex"].abs())
+        .groupby("K", as_index=False)
+        .agg(count=("K", "size"), abs_gex=("abs_gex", "sum"))
+    )
+    return call_clusters, put_clusters
+
+
 def _bs_gamma(
     s: npt.NDArray[np.float64],
     k: npt.NDArray[np.float64],
@@ -107,6 +217,297 @@ def net_gex_by_price(
         net_gex_vals.append(net_gex)
 
     return pd.DataFrame({"price": prices_grid, "net_gex": np.array(net_gex_vals, dtype=float)})
+
+
+def find_aggregate_wall_strikes(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float = 300.0,
+    method: str = "distance_weighted_aggregate",
+    anchor_date: pd.Timestamp | None = None,
+) -> tuple[float | None, float | None]:
+    """Return dominant call and put wall strikes for an aggregate options window.
+
+    Supported methods:
+    - distance_weighted_aggregate: OTM side GEX aggregated by strike, weighted by
+      inverse DTE so nearer expiries matter more.
+    - per_expiry_clustering: OTM wall picked per expiry first, then clustered by
+      repeated strike occurrence across expiries.
+    """
+    if method == "per_expiry_clustering":
+        calls, puts = _clustered_wall_candidates(opts, spot=spot, strike_range=strike_range)
+        if calls.empty and puts.empty:
+            return None, None
+        call_wall = (
+            None
+            if calls.empty
+            else float(
+                calls.sort_values(["count", "abs_gex", "K"], ascending=[False, False, True])
+                .iloc[0]["K"]
+            )
+        )
+        put_wall = (
+            None
+            if puts.empty
+            else float(
+                puts.sort_values(["count", "abs_gex", "K"], ascending=[False, False, False])
+                .iloc[0]["K"]
+            )
+        )
+        return call_wall, put_wall
+
+    calls, puts = _aggregate_side_gex_by_strike(
+        opts,
+        spot=spot,
+        strike_range=strike_range,
+        anchor_date=anchor_date,
+        weight_by_distance=True,
+    )
+    if calls.empty and puts.empty:
+        return None, None
+
+    otm_calls = calls[calls["K"] >= spot]
+    otm_puts = puts[puts["K"] <= spot]
+
+    call_source = otm_calls if not otm_calls.empty else calls
+    put_source = otm_puts if not otm_puts.empty else puts
+
+    call_wall = None if call_source.empty else float(call_source.loc[call_source["gex"].idxmax(), "K"])
+    put_wall = None if put_source.empty else float(put_source.loc[put_source["gex"].idxmin(), "K"])
+    return call_wall, put_wall
+
+
+def find_top_aggregate_gamma_strikes(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float = 300.0,
+    top_n: int = 3,
+    method: str = "distance_weighted_aggregate",
+    anchor_date: pd.Timestamp | None = None,
+) -> tuple[list[float], list[float]]:
+    """Return the largest aggregate call and put GEX strikes in the visible range."""
+    if top_n <= 0:
+        return [], []
+
+    if method == "per_expiry_clustering":
+        calls, puts = _clustered_wall_candidates(opts, spot=spot, strike_range=strike_range)
+        top_calls = calls.sort_values(["count", "abs_gex", "K"], ascending=[False, False, True]).head(top_n)
+        top_puts = puts.sort_values(["count", "abs_gex", "K"], ascending=[False, False, False]).head(top_n)
+        return top_calls["K"].astype(float).tolist(), top_puts["K"].astype(float).tolist()
+
+    calls, puts = _aggregate_side_gex_by_strike(
+        opts,
+        spot=spot,
+        strike_range=strike_range,
+        anchor_date=anchor_date,
+        weight_by_distance=True,
+    )
+    top_calls = calls[calls["K"] >= spot].sort_values("gex", ascending=False).head(top_n)
+    top_puts = puts[puts["K"] <= spot].sort_values("gex", ascending=True).head(top_n)
+    return top_calls["K"].astype(float).tolist(), top_puts["K"].astype(float).tolist()
+
+
+def _distance_weighted_zone_candidates(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float,
+    anchor_date: pd.Timestamp | None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = _side_gex_rows(opts, spot=spot, strike_range=strike_range)
+    calls, puts = _aggregate_side_gex_by_strike(
+        opts,
+        spot=spot,
+        strike_range=strike_range,
+        anchor_date=anchor_date,
+        weight_by_distance=True,
+    )
+    if rows.empty:
+        empty = pd.DataFrame(columns=["K", "score"])
+        return empty, empty
+
+    total_expiries = max(int(rows["expiration_date"].dropna().nunique()), 1)
+
+    def _build_candidates(side_rows: pd.DataFrame, side_agg: pd.DataFrame) -> pd.DataFrame:
+        if side_agg.empty:
+            return pd.DataFrame(columns=["K", "score"])
+        persistence = (
+            side_rows.groupby("K")["expiration_date"]
+            .nunique()
+            .rename("expiry_count")
+            .reset_index()
+        )
+        candidates = side_agg.merge(persistence, on="K", how="left").fillna({"expiry_count": 0})
+        mag = candidates["gex"].abs()
+        max_mag = float(mag.max()) or 1.0
+        candidates["mag_score"] = mag / max_mag
+        candidates["proximity_score"] = 1.0 - ((candidates["K"] - spot).abs() / strike_range).clip(
+            lower=0.0,
+            upper=1.0,
+        )
+        candidates["persistence_score"] = candidates["expiry_count"] / total_expiries
+        candidates["score"] = (
+            0.55 * candidates["mag_score"]
+            + 0.25 * candidates["proximity_score"]
+            + 0.20 * candidates["persistence_score"]
+        )
+        return candidates[["K", "score"]]
+
+    call_rows = rows[(rows["contract_type"] == "CALL") & (rows["K"] >= spot)]
+    put_rows = rows[(rows["contract_type"] == "PUT") & (rows["K"] <= spot)]
+    call_candidates = _build_candidates(call_rows, calls[calls["K"] >= spot])
+    put_candidates = _build_candidates(put_rows, puts[puts["K"] <= spot])
+    return call_candidates, put_candidates
+
+
+def _clustered_zone_candidates(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rows = _side_gex_rows(opts, spot=spot, strike_range=strike_range)
+    calls, puts = _clustered_wall_candidates(opts, spot=spot, strike_range=strike_range)
+    if rows.empty:
+        empty = pd.DataFrame(columns=["K", "score"])
+        return empty, empty
+
+    total_expiries = max(int(rows["expiration_date"].dropna().nunique()), 1)
+
+    def _build_candidates(clusters: pd.DataFrame) -> pd.DataFrame:
+        if clusters.empty:
+            return pd.DataFrame(columns=["K", "score"])
+        max_abs_gex = float(clusters["abs_gex"].max()) or 1.0
+        clusters = clusters.copy()
+        clusters["mag_score"] = clusters["abs_gex"] / max_abs_gex
+        clusters["proximity_score"] = 1.0 - ((clusters["K"] - spot).abs() / strike_range).clip(
+            lower=0.0,
+            upper=1.0,
+        )
+        clusters["persistence_score"] = clusters["count"] / total_expiries
+        clusters["score"] = (
+            0.55 * clusters["persistence_score"]
+            + 0.25 * clusters["mag_score"]
+            + 0.20 * clusters["proximity_score"]
+        )
+        return clusters[["K", "score"]]
+
+    return _build_candidates(calls), _build_candidates(puts)
+
+
+def _cluster_candidates_into_zones(
+    candidates: pd.DataFrame,
+    top_n: int,
+    merge_gap: float = 25.0,
+    zone_pad: float = 5.0,
+    max_zone_width: float = 20.0,
+) -> list[dict[str, float]]:
+    if candidates.empty or top_n <= 0:
+        return []
+
+    candidates = candidates.sort_values("K").reset_index(drop=True)
+
+    # Keep only the strongest candidate strikes before merging into zones.
+    # Without this prefilter, a dense strike ladder can collapse an entire
+    # OTM side into one giant band, which is not useful as a decision level.
+    max_score = float(candidates["score"].max()) or 1.0
+    score_floor = max(0.6 * max_score, float(candidates["score"].quantile(0.75)))
+    strong = candidates[candidates["score"] >= score_floor].copy()
+    min_required = min(len(candidates), max(top_n * 4, top_n))
+    if len(strong) < min_required:
+        strong = candidates.nlargest(min_required, "score").copy()
+    candidates = strong.sort_values("K").reset_index(drop=True)
+
+    zones: list[dict[str, float]] = []
+    rows = candidates.to_dict("records")
+    peaks: list[dict[str, float]] = []
+    for idx, row in enumerate(rows):
+        score = float(row["score"])
+        prev_score = float(rows[idx - 1]["score"]) if idx > 0 else float("-inf")
+        next_score = float(rows[idx + 1]["score"]) if idx + 1 < len(rows) else float("-inf")
+        if score >= prev_score and score >= next_score:
+            peaks.append({"K": float(row["K"]), "score": score})
+
+    if not peaks:
+        peaks = [{"K": float(candidates.loc[candidates["score"].idxmax(), "K"]), "score": max_score}]
+
+    peak_threshold = 0.8
+    used_ranges: list[tuple[float, float]] = []
+    for peak in sorted(peaks, key=lambda item: item["score"], reverse=True):
+        peak_k = float(peak["K"])
+        peak_score = float(peak["score"])
+        group = [
+            {"K": float(row["K"]), "score": float(row["score"])}
+            for row in rows
+            if abs(float(row["K"]) - peak_k) <= merge_gap
+            and float(row["score"]) >= peak_score * peak_threshold
+        ]
+        if not group:
+            group = [peak]
+
+        strikes = np.array([item["K"] for item in group], dtype=float)
+        scores = np.array([item["score"] for item in group], dtype=float)
+        total_score = float(scores.sum())
+        center = float(np.average(strikes, weights=scores)) if total_score > 0 else float(strikes.mean())
+        low = max(float(strikes.min() - zone_pad), center - max_zone_width / 2.0)
+        high = min(float(strikes.max() + zone_pad), center + max_zone_width / 2.0)
+
+        overlaps_existing = any(not (high < existing_low or low > existing_high) for existing_low, existing_high in used_ranges)
+        if overlaps_existing:
+            continue
+        zones.append(
+            {
+                "low": low,
+                "high": high,
+                "center": center,
+                "score": total_score,
+            }
+        )
+        used_ranges.append((low, high))
+
+    zones.sort(key=lambda zone: zone["score"], reverse=True)
+    return zones[:top_n]
+
+
+def find_decision_zones(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float = 300.0,
+    method: str = "distance_weighted_aggregate",
+    anchor_date: pd.Timestamp | None = None,
+    top_n: int = 2,
+    merge_gap: float = 25.0,
+    zone_pad: float = 5.0,
+    max_zone_width: float = 20.0,
+) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+    """Return resistance (calls) and support (puts) zones for the visible window."""
+    if method == "per_expiry_clustering":
+        call_candidates, put_candidates = _clustered_zone_candidates(
+            opts,
+            spot=spot,
+            strike_range=strike_range,
+        )
+    else:
+        call_candidates, put_candidates = _distance_weighted_zone_candidates(
+            opts,
+            spot=spot,
+            strike_range=strike_range,
+            anchor_date=anchor_date,
+        )
+
+    resistance_zones = _cluster_candidates_into_zones(
+        call_candidates,
+        top_n=top_n,
+        merge_gap=merge_gap,
+        zone_pad=zone_pad,
+        max_zone_width=max_zone_width,
+    )
+    support_zones = _cluster_candidates_into_zones(
+        put_candidates,
+        top_n=top_n,
+        merge_gap=merge_gap,
+        zone_pad=zone_pad,
+        max_zone_width=max_zone_width,
+    )
+    return resistance_zones, support_zones
 
 
 def find_zero_gamma_level(

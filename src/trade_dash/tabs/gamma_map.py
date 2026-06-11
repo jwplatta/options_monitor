@@ -10,7 +10,13 @@ import pandas as pd
 import streamlit as st
 
 from trade_dash.calc.flow import compute_intraday_flow
-from trade_dash.calc.gex import net_gex_by_price, net_gex_by_strike
+from trade_dash.calc.gex import (
+    find_decision_zones,
+    find_aggregate_wall_strikes,
+    find_top_aggregate_gamma_strikes,
+    net_gex_by_price,
+    net_gex_by_strike,
+)
 from trade_dash.calc.gex_term_structure import compute_gex_term_structure
 from trade_dash.calc.maker_taker import compute_maker_taker_flow
 from trade_dash.calc.spread import compute_intraday_spread
@@ -147,6 +153,26 @@ def _render_gex_view(
             key="gm_gex_days",
         )
     )
+    wall_mode_label = st.radio(
+        "Level model",
+        options=["Distance-weighted aggregate", "Per-expiry clustering"],
+        horizontal=True,
+        key="gm_gex_wall_mode",
+    )
+    overlay_mode = st.radio(
+        "Overlay",
+        options=["Decision zones", "Walls"],
+        horizontal=True,
+        key="gm_gex_overlay_mode",
+    )
+    show_top_gamma_strikes = False
+    if overlay_mode == "Walls":
+        show_top_gamma_strikes = st.toggle(
+            "Show top gamma strikes",
+            value=False,
+            key="gm_gex_show_top_gamma_strikes",
+            help="Mark the largest aggregate call and put gamma strikes within the visible range.",
+        )
     loaded = _load_window_snapshot_data(
         symbol=symbol,
         start_date=today,
@@ -159,13 +185,60 @@ def _render_gex_view(
         st.warning(f"No {symbol} options snapshots found for next {days_out} days.")
         return
 
+    wall_mode = (
+        "distance_weighted_aggregate"
+        if wall_mode_label == "Distance-weighted aggregate"
+        else "per_expiry_clustering"
+    )
     _, all_opts, spot, strike_range = loaded
     strike_gex = net_gex_by_strike(all_opts, spot=spot, strike_range=strike_range)
+    call_wall_strike: float | None = None
+    put_wall_strike: float | None = None
+    top_call_strikes: list[float] = []
+    top_put_strikes: list[float] = []
+    resistance_zones: list[dict[str, float]] = []
+    support_zones: list[dict[str, float]] = []
+    anchor_ts = pd.Timestamp(today)
+    if overlay_mode == "Decision zones":
+        resistance_zones, support_zones = find_decision_zones(
+            all_opts,
+            spot=spot,
+            strike_range=strike_range,
+            method=wall_mode,
+            anchor_date=anchor_ts,
+            top_n=2,
+        )
+    else:
+        call_wall_strike, put_wall_strike = find_aggregate_wall_strikes(
+            all_opts,
+            spot=spot,
+            strike_range=strike_range,
+            method=wall_mode,
+            anchor_date=anchor_ts,
+        )
+        if show_top_gamma_strikes:
+            top_call_strikes, top_put_strikes = find_top_aggregate_gamma_strikes(
+                all_opts,
+                spot=spot,
+                strike_range=strike_range,
+                top_n=3,
+                method=wall_mode,
+                anchor_date=anchor_ts,
+            )
     with st.spinner("Computing GEX by price grid..."):
         price_gex = net_gex_by_price(all_opts, spot=spot, price_range=strike_range)
 
     fig_agg = build_gex_aggregate_chart(
-        strike_gex, price_gex, spot, title=f"{symbol} GEX Aggregate ({days_out}d)"
+        strike_gex,
+        price_gex,
+        spot,
+        call_wall_strike=call_wall_strike,
+        put_wall_strike=put_wall_strike,
+        top_call_strikes=top_call_strikes,
+        top_put_strikes=top_put_strikes,
+        resistance_zones=resistance_zones,
+        support_zones=support_zones,
+        title=f"{symbol} GEX Aggregate ({days_out}d)",
     )
     st.plotly_chart(fig_agg, use_container_width=True)
 

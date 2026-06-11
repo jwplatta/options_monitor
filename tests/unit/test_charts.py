@@ -85,6 +85,109 @@ def test_build_gex_aggregate_chart_returns_figure(spxw_opts: pd.DataFrame) -> No
     assert len(fig.data) == 2  # bars + line
 
 
+def test_build_gex_aggregate_chart_adds_wall_overlays() -> None:
+    strike_gex = pd.DataFrame(
+        {
+            "strike": [95.0, 100.0, 105.0],
+            "net_gex": [-100.0, 50.0, 125.0],
+        }
+    )
+    price_gex = pd.DataFrame(
+        {
+            "price": [95.0, 100.0, 105.0],
+            "net_gex": [-50.0, 50.0, 100.0],
+        }
+    )
+
+    fig = build_gex_aggregate_chart(
+        strike_gex=strike_gex,
+        price_gex=price_gex,
+        spot=100.0,
+        call_wall_strike=105.0,
+        put_wall_strike=95.0,
+    )
+
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) == 2
+    assert len(fig.layout.shapes or []) == 5
+    assert {annotation.text for annotation in (fig.layout.annotations or [])} == {
+        "Spot 100",
+        "ZGL 98",
+        "Call Wall 105",
+        "Put Wall 95",
+    }
+
+
+def test_build_gex_aggregate_chart_adds_top_gamma_markers() -> None:
+    strike_gex = pd.DataFrame(
+        {
+            "strike": [95.0, 100.0, 105.0],
+            "net_gex": [-100.0, 50.0, 125.0],
+        }
+    )
+    price_gex = pd.DataFrame(
+        {
+            "price": [95.0, 100.0, 105.0],
+            "net_gex": [-50.0, 50.0, 100.0],
+        }
+    )
+
+    fig = build_gex_aggregate_chart(
+        strike_gex=strike_gex,
+        price_gex=price_gex,
+        spot=100.0,
+        call_wall_strike=105.0,
+        put_wall_strike=95.0,
+        top_call_strikes=[105.0, 100.0],
+        top_put_strikes=[95.0, 100.0],
+    )
+
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) == 2
+    assert len(fig.layout.shapes or []) == 7
+    assert {annotation.text for annotation in (fig.layout.annotations or [])} == {
+        "Spot 100",
+        "ZGL 98",
+        "Call Wall 105",
+        "Put Wall 95",
+        "C2 100",
+        "P2 100",
+    }
+
+
+def test_build_gex_aggregate_chart_adds_decision_zone_overlays() -> None:
+    strike_gex = pd.DataFrame(
+        {
+            "strike": [95.0, 100.0, 105.0],
+            "net_gex": [-100.0, 50.0, 125.0],
+        }
+    )
+    price_gex = pd.DataFrame(
+        {
+            "price": [95.0, 100.0, 105.0],
+            "net_gex": [-50.0, 50.0, 100.0],
+        }
+    )
+
+    fig = build_gex_aggregate_chart(
+        strike_gex=strike_gex,
+        price_gex=price_gex,
+        spot=100.0,
+        resistance_zones=[{"low": 100.0, "high": 110.0, "center": 105.0, "score": 1.0}],
+        support_zones=[{"low": 90.0, "high": 100.0, "center": 95.0, "score": 1.0}],
+    )
+
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) == 2
+    assert len(fig.layout.shapes or []) == 5
+    assert {annotation.text for annotation in (fig.layout.annotations or [])} == {
+        "Spot 100",
+        "ZGL 98",
+        "R1 100-110",
+        "S1 90-100",
+    }
+
+
 def test_build_gex_single_expiry_chart_returns_figure(spxw_opts: pd.DataFrame) -> None:
     spot = float(spxw_opts["underlying_price"].iloc[0])
     fig = build_gex_single_expiry_chart(spxw_opts, spot=spot)
