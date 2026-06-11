@@ -219,6 +219,41 @@ def net_gex_by_price(
     return pd.DataFrame({"price": prices_grid, "net_gex": np.array(net_gex_vals, dtype=float)})
 
 
+def find_raw_wall_strikes(
+    opts: pd.DataFrame,
+    spot: float,
+    strike_range: float = 300.0,
+) -> tuple[float | None, float | None]:
+    """Return SpotGamma-style call and put wall strikes.
+
+    The call wall is the OTM strike with the highest raw net call GEX
+    (largest gamma × open_interest concentration above spot).
+    The put wall is the OTM strike with the most negative raw net put GEX
+    (largest gamma × open_interest concentration below spot).
+    No DTE weighting, no proximity bias — just peak open interest × gamma.
+    """
+    calls, puts = _aggregate_side_gex_by_strike(
+        opts,
+        spot=spot,
+        strike_range=strike_range,
+        anchor_date=None,
+        weight_by_distance=False,
+    )
+    otm_calls = calls[calls["K"] >= spot]
+    otm_puts = puts[puts["K"] <= spot]
+
+    call_source = otm_calls if not otm_calls.empty else calls
+    put_source = otm_puts if not otm_puts.empty else puts
+
+    call_wall = None if call_source.empty else float(
+        call_source.loc[call_source["gex"].idxmax(), "K"]
+    )
+    put_wall = None if put_source.empty else float(
+        put_source.loc[put_source["gex"].idxmin(), "K"]
+    )
+    return call_wall, put_wall
+
+
 def find_aggregate_wall_strikes(
     opts: pd.DataFrame,
     spot: float,
@@ -272,8 +307,12 @@ def find_aggregate_wall_strikes(
     call_source = otm_calls if not otm_calls.empty else calls
     put_source = otm_puts if not otm_puts.empty else puts
 
-    call_wall = None if call_source.empty else float(call_source.loc[call_source["gex"].idxmax(), "K"])
-    put_wall = None if put_source.empty else float(put_source.loc[put_source["gex"].idxmin(), "K"])
+    call_wall = None if call_source.empty else float(
+        call_source.loc[call_source["gex"].idxmax(), "K"]
+    )
+    put_wall = None if put_source.empty else float(
+        put_source.loc[put_source["gex"].idxmin(), "K"]
+    )
     return call_wall, put_wall
 
 
@@ -291,8 +330,12 @@ def find_top_aggregate_gamma_strikes(
 
     if method == "per_expiry_clustering":
         calls, puts = _clustered_wall_candidates(opts, spot=spot, strike_range=strike_range)
-        top_calls = calls.sort_values(["count", "abs_gex", "K"], ascending=[False, False, True]).head(top_n)
-        top_puts = puts.sort_values(["count", "abs_gex", "K"], ascending=[False, False, False]).head(top_n)
+        top_calls = calls.sort_values(
+            ["count", "abs_gex", "K"], ascending=[False, False, True]
+        ).head(top_n)
+        top_puts = puts.sort_values(
+            ["count", "abs_gex", "K"], ascending=[False, False, False]
+        ).head(top_n)
         return top_calls["K"].astype(float).tolist(), top_puts["K"].astype(float).tolist()
 
     calls, puts = _aggregate_side_gex_by_strike(
@@ -340,15 +383,10 @@ def _distance_weighted_zone_candidates(
         mag = candidates["gex"].abs()
         max_mag = float(mag.max()) or 1.0
         candidates["mag_score"] = mag / max_mag
-        candidates["proximity_score"] = 1.0 - ((candidates["K"] - spot).abs() / strike_range).clip(
-            lower=0.0,
-            upper=1.0,
-        )
         candidates["persistence_score"] = candidates["expiry_count"] / total_expiries
         candidates["score"] = (
-            0.55 * candidates["mag_score"]
-            + 0.25 * candidates["proximity_score"]
-            + 0.20 * candidates["persistence_score"]
+            0.70 * candidates["mag_score"]
+            + 0.30 * candidates["persistence_score"]
         )
         return candidates[["K", "score"]]
 
@@ -358,39 +396,6 @@ def _distance_weighted_zone_candidates(
     put_candidates = _build_candidates(put_rows, puts[puts["K"] <= spot])
     return call_candidates, put_candidates
 
-
-def _clustered_zone_candidates(
-    opts: pd.DataFrame,
-    spot: float,
-    strike_range: float,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    rows = _side_gex_rows(opts, spot=spot, strike_range=strike_range)
-    calls, puts = _clustered_wall_candidates(opts, spot=spot, strike_range=strike_range)
-    if rows.empty:
-        empty = pd.DataFrame(columns=["K", "score"])
-        return empty, empty
-
-    total_expiries = max(int(rows["expiration_date"].dropna().nunique()), 1)
-
-    def _build_candidates(clusters: pd.DataFrame) -> pd.DataFrame:
-        if clusters.empty:
-            return pd.DataFrame(columns=["K", "score"])
-        max_abs_gex = float(clusters["abs_gex"].max()) or 1.0
-        clusters = clusters.copy()
-        clusters["mag_score"] = clusters["abs_gex"] / max_abs_gex
-        clusters["proximity_score"] = 1.0 - ((clusters["K"] - spot).abs() / strike_range).clip(
-            lower=0.0,
-            upper=1.0,
-        )
-        clusters["persistence_score"] = clusters["count"] / total_expiries
-        clusters["score"] = (
-            0.55 * clusters["persistence_score"]
-            + 0.25 * clusters["mag_score"]
-            + 0.20 * clusters["proximity_score"]
-        )
-        return clusters[["K", "score"]]
-
-    return _build_candidates(calls), _build_candidates(puts)
 
 
 def _cluster_candidates_into_zones(
@@ -427,7 +432,8 @@ def _cluster_candidates_into_zones(
             peaks.append({"K": float(row["K"]), "score": score})
 
     if not peaks:
-        peaks = [{"K": float(candidates.loc[candidates["score"].idxmax(), "K"]), "score": max_score}]
+        best_k = float(candidates.loc[candidates["score"].idxmax(), "K"])
+        peaks = [{"K": best_k, "score": max_score}]
 
     peak_threshold = 0.8
     used_ranges: list[tuple[float, float]] = []
@@ -446,11 +452,16 @@ def _cluster_candidates_into_zones(
         strikes = np.array([item["K"] for item in group], dtype=float)
         scores = np.array([item["score"] for item in group], dtype=float)
         total_score = float(scores.sum())
-        center = float(np.average(strikes, weights=scores)) if total_score > 0 else float(strikes.mean())
+        center = (
+            float(np.average(strikes, weights=scores)) if total_score > 0 else float(strikes.mean())
+        )
         low = max(float(strikes.min() - zone_pad), center - max_zone_width / 2.0)
         high = min(float(strikes.max() + zone_pad), center + max_zone_width / 2.0)
 
-        overlaps_existing = any(not (high < existing_low or low > existing_high) for existing_low, existing_high in used_ranges)
+        overlaps_existing = any(
+            not (high < existing_low or low > existing_high)
+            for existing_low, existing_high in used_ranges
+        )
         if overlaps_existing:
             continue
         zones.append(
@@ -471,27 +482,22 @@ def find_decision_zones(
     opts: pd.DataFrame,
     spot: float,
     strike_range: float = 300.0,
-    method: str = "distance_weighted_aggregate",
     anchor_date: pd.Timestamp | None = None,
     top_n: int = 2,
     merge_gap: float = 25.0,
     zone_pad: float = 5.0,
     max_zone_width: float = 20.0,
 ) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
-    """Return resistance (calls) and support (puts) zones for the visible window."""
-    if method == "per_expiry_clustering":
-        call_candidates, put_candidates = _clustered_zone_candidates(
-            opts,
-            spot=spot,
-            strike_range=strike_range,
-        )
-    else:
-        call_candidates, put_candidates = _distance_weighted_zone_candidates(
-            opts,
-            spot=spot,
-            strike_range=strike_range,
-            anchor_date=anchor_date,
-        )
+    """Return resistance (calls) and support (puts) zones for the visible window.
+
+    Uses distance-weighted aggregate scoring (magnitude + persistence, no proximity bias).
+    """
+    call_candidates, put_candidates = _distance_weighted_zone_candidates(
+        opts,
+        spot=spot,
+        strike_range=strike_range,
+        anchor_date=anchor_date,
+    )
 
     resistance_zones = _cluster_candidates_into_zones(
         call_candidates,
@@ -508,6 +514,7 @@ def find_decision_zones(
         max_zone_width=max_zone_width,
     )
     return resistance_zones, support_zones
+
 
 
 def find_zero_gamma_level(

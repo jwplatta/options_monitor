@@ -11,9 +11,9 @@ import streamlit as st
 
 from trade_dash.calc.flow import compute_intraday_flow
 from trade_dash.calc.gex import (
-    find_decision_zones,
     find_aggregate_wall_strikes,
-    find_top_aggregate_gamma_strikes,
+    find_decision_zones,
+    find_raw_wall_strikes,
     net_gex_by_price,
     net_gex_by_strike,
 )
@@ -153,26 +153,6 @@ def _render_gex_view(
             key="gm_gex_days",
         )
     )
-    wall_mode_label = st.radio(
-        "Level model",
-        options=["Distance-weighted aggregate", "Per-expiry clustering"],
-        horizontal=True,
-        key="gm_gex_wall_mode",
-    )
-    overlay_mode = st.radio(
-        "Overlay",
-        options=["Decision zones", "Walls"],
-        horizontal=True,
-        key="gm_gex_overlay_mode",
-    )
-    show_top_gamma_strikes = False
-    if overlay_mode == "Walls":
-        show_top_gamma_strikes = st.toggle(
-            "Show top gamma strikes",
-            value=False,
-            key="gm_gex_show_top_gamma_strikes",
-            help="Mark the largest aggregate call and put gamma strikes within the visible range.",
-        )
     loaded = _load_window_snapshot_data(
         symbol=symbol,
         start_date=today,
@@ -185,46 +165,36 @@ def _render_gex_view(
         st.warning(f"No {symbol} options snapshots found for next {days_out} days.")
         return
 
-    wall_mode = (
-        "distance_weighted_aggregate"
-        if wall_mode_label == "Distance-weighted aggregate"
-        else "per_expiry_clustering"
-    )
     _, all_opts, spot, strike_range = loaded
-    strike_gex = net_gex_by_strike(all_opts, spot=spot, strike_range=strike_range)
-    call_wall_strike: float | None = None
-    put_wall_strike: float | None = None
-    top_call_strikes: list[float] = []
-    top_put_strikes: list[float] = []
-    resistance_zones: list[dict[str, float]] = []
-    support_zones: list[dict[str, float]] = []
     anchor_ts = pd.Timestamp(today)
-    if overlay_mode == "Decision zones":
-        resistance_zones, support_zones = find_decision_zones(
-            all_opts,
-            spot=spot,
-            strike_range=strike_range,
-            method=wall_mode,
-            anchor_date=anchor_ts,
-            top_n=2,
-        )
-    else:
-        call_wall_strike, put_wall_strike = find_aggregate_wall_strikes(
-            all_opts,
-            spot=spot,
-            strike_range=strike_range,
-            method=wall_mode,
-            anchor_date=anchor_ts,
-        )
-        if show_top_gamma_strikes:
-            top_call_strikes, top_put_strikes = find_top_aggregate_gamma_strikes(
-                all_opts,
-                spot=spot,
-                strike_range=strike_range,
-                top_n=3,
-                method=wall_mode,
-                anchor_date=anchor_ts,
-            )
+
+    strike_gex = net_gex_by_strike(all_opts, spot=spot, strike_range=strike_range)
+
+    raw_call_wall, raw_put_wall = find_raw_wall_strikes(
+        all_opts, spot=spot, strike_range=strike_range
+    )
+    dw_call_wall, dw_put_wall = find_aggregate_wall_strikes(
+        all_opts,
+        spot=spot,
+        strike_range=strike_range,
+        method="distance_weighted_aggregate",
+        anchor_date=anchor_ts,
+    )
+    cluster_call_wall, cluster_put_wall = find_aggregate_wall_strikes(
+        all_opts,
+        spot=spot,
+        strike_range=strike_range,
+        method="per_expiry_clustering",
+        anchor_date=anchor_ts,
+    )
+    resistance_zones, support_zones = find_decision_zones(
+        all_opts,
+        spot=spot,
+        strike_range=strike_range,
+        anchor_date=anchor_ts,
+        top_n=2,
+    )
+
     with st.spinner("Computing GEX by price grid..."):
         price_gex = net_gex_by_price(all_opts, spot=spot, price_range=strike_range)
 
@@ -232,10 +202,12 @@ def _render_gex_view(
         strike_gex,
         price_gex,
         spot,
-        call_wall_strike=call_wall_strike,
-        put_wall_strike=put_wall_strike,
-        top_call_strikes=top_call_strikes,
-        top_put_strikes=top_put_strikes,
+        raw_call_wall=raw_call_wall,
+        raw_put_wall=raw_put_wall,
+        dw_call_wall=dw_call_wall,
+        dw_put_wall=dw_put_wall,
+        cluster_call_wall=cluster_call_wall,
+        cluster_put_wall=cluster_put_wall,
         resistance_zones=resistance_zones,
         support_zones=support_zones,
         title=f"{symbol} GEX Aggregate ({days_out}d)",

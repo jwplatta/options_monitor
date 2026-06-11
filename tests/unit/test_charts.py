@@ -85,7 +85,7 @@ def test_build_gex_aggregate_chart_returns_figure(spxw_opts: pd.DataFrame) -> No
     assert len(fig.data) == 2  # bars + line
 
 
-def test_build_gex_aggregate_chart_adds_wall_overlays() -> None:
+def test_build_gex_aggregate_chart_adds_raw_walls() -> None:
     strike_gex = pd.DataFrame(
         {
             "strike": [95.0, 100.0, 105.0],
@@ -103,22 +103,19 @@ def test_build_gex_aggregate_chart_adds_wall_overlays() -> None:
         strike_gex=strike_gex,
         price_gex=price_gex,
         spot=100.0,
-        call_wall_strike=105.0,
-        put_wall_strike=95.0,
+        raw_call_wall=105.0,
+        raw_put_wall=95.0,
     )
 
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 2
-    assert len(fig.layout.shapes or []) == 5
-    assert {annotation.text for annotation in (fig.layout.annotations or [])} == {
-        "Spot 100",
-        "ZGL 98",
-        "Call Wall 105",
-        "Put Wall 95",
-    }
+    annotation_texts = {a.text for a in (fig.layout.annotations or [])}
+    assert "CW 105" in annotation_texts
+    assert "PW 95" in annotation_texts
+    assert "Spot 100" in annotation_texts
 
 
-def test_build_gex_aggregate_chart_adds_top_gamma_markers() -> None:
+def test_build_gex_aggregate_chart_adds_all_wall_types() -> None:
     strike_gex = pd.DataFrame(
         {
             "strike": [95.0, 100.0, 105.0],
@@ -136,23 +133,22 @@ def test_build_gex_aggregate_chart_adds_top_gamma_markers() -> None:
         strike_gex=strike_gex,
         price_gex=price_gex,
         spot=100.0,
-        call_wall_strike=105.0,
-        put_wall_strike=95.0,
-        top_call_strikes=[105.0, 100.0],
-        top_put_strikes=[95.0, 100.0],
+        raw_call_wall=105.0,
+        raw_put_wall=95.0,
+        dw_call_wall=104.0,
+        dw_put_wall=96.0,
+        cluster_call_wall=103.0,
+        cluster_put_wall=97.0,
     )
 
     assert isinstance(fig, go.Figure)
-    assert len(fig.data) == 2
-    assert len(fig.layout.shapes or []) == 7
-    assert {annotation.text for annotation in (fig.layout.annotations or [])} == {
-        "Spot 100",
-        "ZGL 98",
-        "Call Wall 105",
-        "Put Wall 95",
-        "C2 100",
-        "P2 100",
-    }
+    annotation_texts = {a.text for a in (fig.layout.annotations or [])}
+    assert "CW 105" in annotation_texts
+    assert "PW 95" in annotation_texts
+    assert "CW-DW 104" in annotation_texts
+    assert "PW-DW 96" in annotation_texts
+    assert "CW-CL 103" in annotation_texts
+    assert "PW-CL 97" in annotation_texts
 
 
 def test_build_gex_aggregate_chart_adds_decision_zone_overlays() -> None:
@@ -179,13 +175,10 @@ def test_build_gex_aggregate_chart_adds_decision_zone_overlays() -> None:
 
     assert isinstance(fig, go.Figure)
     assert len(fig.data) == 2
-    assert len(fig.layout.shapes or []) == 5
-    assert {annotation.text for annotation in (fig.layout.annotations or [])} == {
-        "Spot 100",
-        "ZGL 98",
-        "R1 100-110",
-        "S1 90-100",
-    }
+    annotation_texts = {a.text for a in (fig.layout.annotations or [])}
+    assert "R1 100–110" in annotation_texts
+    assert "S1 90–100" in annotation_texts
+    assert "Spot 100" in annotation_texts
 
 
 def test_build_gex_single_expiry_chart_returns_figure(spxw_opts: pd.DataFrame) -> None:

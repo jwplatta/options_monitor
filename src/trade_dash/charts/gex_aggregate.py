@@ -1,4 +1,4 @@
-"""GEX aggregate chart: strike bars + price-grid line + spot + ZGL."""
+"""GEX aggregate chart: strike bars + price-grid line + spot + ZGL + all key levels."""
 
 from __future__ import annotations
 
@@ -71,26 +71,41 @@ def build_gex_aggregate_chart(
     strike_gex: pd.DataFrame,
     price_gex: pd.DataFrame,
     spot: float,
-    call_wall_strike: float | None = None,
-    put_wall_strike: float | None = None,
-    top_call_strikes: list[float] | None = None,
-    top_put_strikes: list[float] | None = None,
+    # SpotGamma-style raw OI×gamma peak walls
+    raw_call_wall: float | None = None,
+    raw_put_wall: float | None = None,
+    # DTE-weighted aggregate walls
+    dw_call_wall: float | None = None,
+    dw_put_wall: float | None = None,
+    # Per-expiry clustering walls
+    cluster_call_wall: float | None = None,
+    cluster_put_wall: float | None = None,
+    # Decision zones (magnitude + persistence scored)
     resistance_zones: list[dict[str, float]] | None = None,
     support_zones: list[dict[str, float]] | None = None,
     title: str = "GEX Aggregate",
 ) -> go.Figure:
-    """Mixed bar (net GEX by strike) + line (net GEX by price) + spot + ZGL markers.
+    """Mixed bar (net GEX by strike) + line (net GEX by price) + all key levels.
+
+    Three wall models are shown simultaneously with distinct colors:
+    - Raw (SpotGamma-style): brightest green/red solid lines
+    - Distance-weighted aggregate: medium green/red dashed lines
+    - Per-expiry clustering: muted green/red dotted lines
+
+    Decision zones are translucent bands scored by magnitude + persistence.
 
     Args:
-        strike_gex: DataFrame with columns [strike, net_gex]
-        price_gex: DataFrame with columns [price, net_gex]
+        strike_gex: DataFrame[strike, net_gex]
+        price_gex: DataFrame[price, net_gex]
         spot: Current underlying price
-        call_wall_strike: Dominant call wall strike for the aggregate window
-        put_wall_strike: Dominant put wall strike for the aggregate window
-        top_call_strikes: Additional high-call-GEX strikes to mark
-        top_put_strikes: Additional high-put-GEX strikes to mark
-        resistance_zones: Resistance zone overlays [{low, high, center, score}]
-        support_zones: Support zone overlays [{low, high, center, score}]
+        raw_call_wall: SpotGamma-style call wall (peak raw OI×gamma above spot)
+        raw_put_wall: SpotGamma-style put wall (peak raw OI×gamma below spot)
+        dw_call_wall: DTE-weighted aggregate call wall
+        dw_put_wall: DTE-weighted aggregate put wall
+        cluster_call_wall: Per-expiry clustering call wall
+        cluster_put_wall: Per-expiry clustering put wall
+        resistance_zones: [{low, high, center, score}] resistance bands
+        support_zones: [{low, high, center, score}] support bands
         title: Chart title
     """
     zgl = find_zero_gamma_level(
@@ -100,7 +115,6 @@ def build_gex_aggregate_chart(
 
     colors: list[str] = ["green" if g >= 0 else "red" for g in strike_gex["net_gex"]]
 
-    # Scale the price-grid line to match the strike bar y-axis range
     max_bar = float(np.abs(strike_gex["net_gex"]).max()) or 1.0
     max_line = float(np.abs(price_gex["net_gex"]).max()) or 1.0
     scale = max_bar / max_line
@@ -124,33 +138,26 @@ def build_gex_aggregate_chart(
         )
     )
     fig.add_hline(y=0, line_dash="solid", line_color="white", line_width=0.5)
+
+    # --- Spot and ZGL ---
     _add_vertical_marker(
-        fig,
-        x=spot,
-        text=f"Spot {spot:.0f}",
-        color="white",
-        line_dash="dash",
-        y_paper=0.9,
-        xanchor="left",
+        fig, x=spot, text=f"Spot {spot:.0f}",
+        color="white", line_dash="dash", y_paper=0.92, xanchor="left",
     )
     if zgl is not None:
         _add_vertical_marker(
-            fig,
-            x=zgl,
-            text=f"ZGL {zgl:.0f}",
-            color="yellow",
-            line_dash="dot",
-            y_paper=0.82,
-            xanchor="right",
+            fig, x=zgl, text=f"ZGL {zgl:.0f}",
+            color="yellow", line_dash="dot", y_paper=0.84, xanchor="right",
         )
+    # --- Decision zones (translucent bands, no annotation clutter) ---
     for idx, zone in enumerate(resistance_zones or [], start=1):
         _add_zone_overlay(
             fig,
             low=float(zone["low"]),
             high=float(zone["high"]),
-            label=f"R{idx} {zone['low']:.0f}-{zone['high']:.0f}",
+            label=f"R{idx} {zone['low']:.0f}–{zone['high']:.0f}",
             color="rgba(0, 220, 0, 0.9)",
-            y_paper=0.18 + (idx - 1) * 0.1,
+            y_paper=0.20 + (idx - 1) * 0.08,
             xanchor="left",
         )
     for idx, zone in enumerate(support_zones or [], start=1):
@@ -158,55 +165,48 @@ def build_gex_aggregate_chart(
             fig,
             low=float(zone["low"]),
             high=float(zone["high"]),
-            label=f"S{idx} {zone['low']:.0f}-{zone['high']:.0f}",
+            label=f"S{idx} {zone['low']:.0f}–{zone['high']:.0f}",
             color="rgba(220, 0, 0, 0.9)",
-            y_paper=0.1 + (idx - 1) * 0.1,
+            y_paper=0.20 + (idx - 1) * 0.08,
             xanchor="right",
         )
-    if call_wall_strike is not None:
+
+    # --- Raw (SpotGamma-style) walls — solid, brightest, topmost labels ---
+    if raw_call_wall is not None:
         _add_vertical_marker(
-            fig,
-            x=call_wall_strike,
-            text=f"Call Wall {call_wall_strike:.0f}",
-            color="green",
-            line_dash="dot",
-            y_paper=0.18,
-            xanchor="left",
+            fig, x=raw_call_wall, text=f"CW {raw_call_wall:.0f}",
+            color="#00ff88", line_dash="solid", y_paper=0.72, xanchor="left",
         )
-    if put_wall_strike is not None:
+    if raw_put_wall is not None:
         _add_vertical_marker(
-            fig,
-            x=put_wall_strike,
-            text=f"Put Wall {put_wall_strike:.0f}",
-            color="red",
-            line_dash="dot",
-            y_paper=0.1,
-            xanchor="right",
+            fig, x=raw_put_wall, text=f"PW {raw_put_wall:.0f}",
+            color="#ff4444", line_dash="solid", y_paper=0.72, xanchor="right",
         )
-    for idx, strike in enumerate(top_call_strikes or [], start=1):
-        if call_wall_strike is not None and float(strike) == float(call_wall_strike):
-            continue
+
+    # --- Distance-weighted aggregate walls — dashed, mid-brightness ---
+    if dw_call_wall is not None:
         _add_vertical_marker(
-            fig,
-            x=strike,
-            text=f"C{idx} {strike:.0f}",
-            color="rgba(0, 220, 0, 0.75)",
-            line_dash="dash",
-            y_paper=0.74,
-            xanchor="right",
+            fig, x=dw_call_wall, text=f"CW-DW {dw_call_wall:.0f}",
+            color="#00cc66", line_dash="dash", y_paper=0.60, xanchor="left",
         )
-    for idx, strike in enumerate(top_put_strikes or [], start=1):
-        if put_wall_strike is not None and float(strike) == float(put_wall_strike):
-            continue
+    if dw_put_wall is not None:
         _add_vertical_marker(
-            fig,
-            x=strike,
-            text=f"P{idx} {strike:.0f}",
-            color="rgba(220, 0, 0, 0.75)",
-            line_dash="dash",
-            y_paper=0.26,
-            xanchor="left",
+            fig, x=dw_put_wall, text=f"PW-DW {dw_put_wall:.0f}",
+            color="#cc2222", line_dash="dash", y_paper=0.60, xanchor="right",
         )
+
+    # --- Per-expiry clustering walls — dotted, muted ---
+    if cluster_call_wall is not None:
+        _add_vertical_marker(
+            fig, x=cluster_call_wall, text=f"CW-CL {cluster_call_wall:.0f}",
+            color="#009944", line_dash="dot", y_paper=0.48, xanchor="left",
+        )
+    if cluster_put_wall is not None:
+        _add_vertical_marker(
+            fig, x=cluster_put_wall, text=f"PW-CL {cluster_put_wall:.0f}",
+            color="#991111", line_dash="dot", y_paper=0.48, xanchor="right",
+        )
+
     fig.update_layout(
         title=title,
         xaxis_title="Strike / Price",

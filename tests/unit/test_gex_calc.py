@@ -303,7 +303,6 @@ def test_find_decision_zones_distance_weighted_returns_otm_bands() -> None:
         opts,
         spot=100.0,
         strike_range=35.0,
-        method="distance_weighted_aggregate",
         anchor_date=pd.Timestamp("2026-01-01"),
         top_n=1,
         merge_gap=10.0,
@@ -312,51 +311,6 @@ def test_find_decision_zones_distance_weighted_returns_otm_bands() -> None:
 
     assert len(resistance_zones) == 1
     assert len(support_zones) == 1
-    assert resistance_zones[0]["low"] == 100.0
-    assert resistance_zones[0]["high"] == 110.0
-    assert support_zones[0]["low"] == 90.0
-    assert support_zones[0]["high"] == 100.0
-
-
-def test_find_decision_zones_supports_per_expiry_clustering() -> None:
-    opts = pd.DataFrame(
-        {
-            "contract_type": [
-                "CALL",
-                "CALL",
-                "CALL",
-                "CALL",
-                "PUT",
-                "PUT",
-                "PUT",
-                "PUT",
-            ],
-            "strike": [105.0, 110.0, 105.0, 115.0, 95.0, 90.0, 95.0, 85.0],
-            "open_interest": [20.0, 10.0, 15.0, 8.0, 20.0, 10.0, 15.0, 8.0],
-            "gamma": [2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0],
-            "expiration_date": [
-                "2026-01-02",
-                "2026-01-02",
-                "2026-01-03",
-                "2026-01-03",
-                "2026-01-02",
-                "2026-01-02",
-                "2026-01-03",
-                "2026-01-03",
-            ],
-        }
-    )
-
-    resistance_zones, support_zones = find_decision_zones(
-        opts,
-        spot=100.0,
-        strike_range=20.0,
-        method="per_expiry_clustering",
-        top_n=1,
-        merge_gap=10.0,
-        zone_pad=5.0,
-    )
-
     assert resistance_zones[0]["low"] == 100.0
     assert resistance_zones[0]["high"] == 110.0
     assert support_zones[0]["low"] == 90.0
@@ -379,7 +333,6 @@ def test_find_decision_zones_limits_zone_width_for_dense_side() -> None:
         opts,
         spot=100.0,
         strike_range=35.0,
-        method="distance_weighted_aggregate",
         anchor_date=pd.Timestamp("2026-01-01"),
         top_n=1,
         merge_gap=10.0,
