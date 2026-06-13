@@ -7,7 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from trade_dash.tabs.gamma_map import (
+from trade_dash.tabs.gex import (
     _render_gex_history_view,
     _render_history_view,
     _select_single_expiry,

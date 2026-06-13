@@ -1,4 +1,4 @@
-"""Gamma Map tab: options positioning and key levels."""
+"""GEX tab: options positioning and key levels."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from trade_dash.calc.flow import compute_intraday_flow
 from trade_dash.calc.gex import (
     find_aggregate_wall_strikes,
     find_decision_zones,
@@ -18,19 +17,13 @@ from trade_dash.calc.gex import (
     net_gex_by_strike,
 )
 from trade_dash.calc.gex_term_structure import compute_gex_term_structure
-from trade_dash.calc.maker_taker import compute_maker_taker_flow
-from trade_dash.calc.spread import compute_intraday_spread
 from trade_dash.calc.vol import compute_risk_reversal
-from trade_dash.charts.flow_heatmap import build_flow_heatmap_chart
 from trade_dash.charts.gex_aggregate import build_gex_aggregate_chart
 from trade_dash.charts.gex_single import build_gex_single_expiry_chart
 from trade_dash.charts.gex_term_structure import build_gex_term_structure_chart
-from trade_dash.charts.maker_taker_bubble import build_maker_taker_bubble_chart
 from trade_dash.charts.skew_indicators import build_skew_indicators
-from trade_dash.charts.spread_heatmap import build_spread_heatmap_chart
 from trade_dash.charts.vol_skew import build_vol_skew_chart
 from trade_dash.data.options import (
-    find_all_snapshots_for_expiry,
     find_latest_snapshots,
     find_snapshots_for_expiry_on_date,
     find_snapshots_for_window_on_date,
@@ -43,17 +36,13 @@ from trade_dash.data.options import (
 )
 
 _CHICAGO = ZoneInfo("America/Chicago")
-_GAMMA_MAP_VIEWS = [
+_GEX_VIEWS = [
     "GEX",
     "Chains",
-    "Intraday",
     "Gamma Heatmap",
-    "Maker-Taker",
 ]
 _SINGLE_EXPIRY_VIEWS = {
     "Chains",
-    "Intraday",
-    "Maker-Taker",
 }
 
 
@@ -516,159 +505,6 @@ def _render_history_view(
     st.plotly_chart(fig_single, use_container_width=True)
 
 
-def _render_intraday_view(
-    symbol: str,
-    selected_exp: date,
-    range_pct: float,
-    options_dir: Path,
-) -> None:
-    loaded = _load_single_expiry_snapshot_data(symbol, selected_exp, range_pct, options_dir)
-    if loaded is None:
-        st.warning(f"No {symbol} options snapshots found for {selected_exp.isoformat()}.")
-        return
-
-    _, spot, strike_range = loaded
-    col_ct, col_date, col_wt = st.columns([3, 2, 1])
-    with col_ct:
-        ct_filter = str(
-            st.radio(
-                "Contract type",
-                options=["ALL", "CALL", "PUT"],
-                horizontal=True,
-                key="gm_intraday_ct",
-            )
-        )
-    with col_date:
-        intraday_date = st.date_input(
-            "Sample date",
-            value=date.today(),
-            key="gm_intraday_date",
-        )
-    with col_wt:
-        weight_by_delta = st.toggle("Weight by delta", value=True, key="gm_intraday_weight_delta")
-    bucket_minutes = int(
-        st.select_slider(
-            "Sample interval (minutes)",
-            options=[1, 5, 10, 15, 20, 25, 30],
-            value=5,
-            key="gm_intraday_bucket",
-        )
-    )
-
-    all_expiry_snapshots = find_all_snapshots_for_expiry(
-        symbol,
-        expiry=selected_exp,
-        data_dir=options_dir,
-    )
-    flow_key = (
-        symbol,
-        selected_exp.isoformat(),
-        round(spot),
-        strike_range,
-        ct_filter,
-        bucket_minutes,
-        weight_by_delta,
-        intraday_date,
-        len(all_expiry_snapshots),
-    )
-    with st.spinner("Computing intraday flow..."):
-        if st.session_state.get("_flow_key") != flow_key:
-            flow_strikes, flow_timestamps, flow_matrix, flow_prices = compute_intraday_flow(
-                all_expiry_snapshots,
-                spot=spot,
-                moneyness_pct=range_pct / 100,
-                contract_filter=ct_filter,
-                bucket_minutes=bucket_minutes,
-                weight_by_delta=weight_by_delta,
-                target_date=intraday_date,
-            )
-            st.session_state["_flow_key"] = flow_key
-            st.session_state["_flow_strikes"] = flow_strikes
-            st.session_state["_flow_timestamps"] = flow_timestamps
-            st.session_state["_flow_matrix"] = flow_matrix
-            st.session_state["_flow_prices"] = flow_prices
-        else:
-            flow_strikes = st.session_state["_flow_strikes"]
-            flow_timestamps = st.session_state["_flow_timestamps"]
-            flow_matrix = st.session_state["_flow_matrix"]
-            flow_prices = st.session_state["_flow_prices"]
-
-        fig_flow = build_flow_heatmap_chart(
-            flow_strikes,
-            flow_timestamps,
-            flow_matrix,
-            prices=flow_prices,
-            title=f"{symbol} Intraday Flow {selected_exp}",
-        )
-    st.plotly_chart(fig_flow, use_container_width=True)
-
-    st.divider()
-    col_sct, col_sdate, _ = st.columns([2, 2, 2])
-    with col_sct:
-        spread_ct = str(
-            st.radio(
-                "Contract type",
-                options=["CALL", "PUT"],
-                horizontal=True,
-                key="gm_spread_ct",
-            )
-        )
-    with col_sdate:
-        spread_date = st.date_input(
-            "Sample Date",
-            value=date.today(),
-            key="gm_spread_date",
-        )
-    spread_bucket_minutes = int(
-        st.select_slider(
-            "Sample interval (minutes)",
-            options=[1, 5, 10, 15, 20, 25, 30],
-            value=5,
-            key="gm_spread_bucket",
-        )
-    )
-
-    spread_key = (
-        symbol,
-        selected_exp.isoformat(),
-        round(spot),
-        strike_range,
-        spread_ct,
-        spread_bucket_minutes,
-        spread_date,
-        len(all_expiry_snapshots),
-    )
-    with st.spinner("Computing spread heatmap..."):
-        if st.session_state.get("_spread_key") != spread_key:
-            spread_strikes, spread_ts, spread_matrix, spread_prices = compute_intraday_spread(
-                all_expiry_snapshots,
-                spot=spot,
-                moneyness_pct=range_pct / 100,
-                contract_filter=spread_ct,
-                bucket_minutes=spread_bucket_minutes,
-                target_date=spread_date,
-            )
-            st.session_state["_spread_key"] = spread_key
-            st.session_state["_spread_strikes"] = spread_strikes
-            st.session_state["_spread_ts"] = spread_ts
-            st.session_state["_spread_matrix"] = spread_matrix
-            st.session_state["_spread_prices"] = spread_prices
-        else:
-            spread_strikes = st.session_state["_spread_strikes"]
-            spread_ts = st.session_state["_spread_ts"]
-            spread_matrix = st.session_state["_spread_matrix"]
-            spread_prices = st.session_state["_spread_prices"]
-
-        fig_spread = build_spread_heatmap_chart(
-            spread_strikes,
-            spread_ts,
-            spread_matrix,
-            prices=spread_prices,
-            title=f"{symbol} Bid-Ask Spread Z {selected_exp} ({spread_ct})",
-        )
-    st.plotly_chart(fig_spread, use_container_width=True)
-
-
 def _render_gamma_heatmap_view(
     symbol: str,
     today: date,
@@ -742,101 +578,7 @@ def _render_gamma_heatmap_view(
     st.plotly_chart(fig_gh, use_container_width=True)
 
 
-def _render_maker_taker_view(
-    symbol: str,
-    selected_exp: date,
-    range_pct: float,
-    options_dir: Path,
-) -> None:
-    loaded = _load_single_expiry_snapshot_data(symbol, selected_exp, range_pct, options_dir)
-    if loaded is None:
-        st.warning(f"No {symbol} options snapshots found for {selected_exp.isoformat()}.")
-        return
-
-    _, spot, strike_range = loaded
-    col_mt_bucket, col_mt_top_n, col_mt_date = st.columns([1, 1, 1])
-    with col_mt_bucket:
-        mt_bucket = int(
-            st.select_slider(
-                "Sample interval (minutes)",
-                options=[1, 5, 10, 15, 30, 60],
-                value=5,
-                key="gm_mt_bucket",
-            )
-        )
-    with col_mt_top_n:
-        mt_top_n = int(
-            st.slider(
-                "Top N strikes",
-                min_value=5,
-                max_value=20,
-                value=10,
-                key="gm_mt_top_n",
-            )
-        )
-    with col_mt_date:
-        mt_date = st.date_input("Sample date", value=date.today(), key="gm_mt_date")
-    mt_weight = "total_volume"
-
-    all_expiry_snapshots = find_all_snapshots_for_expiry(
-        symbol,
-        expiry=selected_exp,
-        data_dir=options_dir,
-    )
-    for mt_ct in ["CALL", "PUT"]:
-        mt_key = (
-            symbol,
-            selected_exp.isoformat(),
-            round(spot),
-            strike_range,
-            mt_ct,
-            mt_bucket,
-            mt_date,
-            mt_top_n,
-            len(all_expiry_snapshots),
-        )
-        state_prefix = f"_mt_{mt_ct}"
-
-        with st.spinner(f"Computing maker-taker flow ({mt_ct})..."):
-            if st.session_state.get(f"{state_prefix}_key") != mt_key:
-                mt_timestamps, mt_strikes, mt_flows, mt_bucket_times, mt_bucket_prices = (
-                    compute_maker_taker_flow(
-                        all_expiry_snapshots,
-                        spot=spot,
-                        moneyness_pct=range_pct / 100,
-                        contract_filter=mt_ct,
-                        bucket_minutes=mt_bucket,
-                        weight_by=mt_weight,
-                        target_date=mt_date,
-                        top_n_strikes=mt_top_n,
-                    )
-                )
-                st.session_state[f"{state_prefix}_key"] = mt_key
-                st.session_state[f"{state_prefix}_timestamps"] = mt_timestamps
-                st.session_state[f"{state_prefix}_strikes"] = mt_strikes
-                st.session_state[f"{state_prefix}_flows"] = mt_flows
-                st.session_state[f"{state_prefix}_bucket_times"] = mt_bucket_times
-                st.session_state[f"{state_prefix}_bucket_prices"] = mt_bucket_prices
-            else:
-                mt_timestamps = st.session_state[f"{state_prefix}_timestamps"]
-                mt_strikes = st.session_state[f"{state_prefix}_strikes"]
-                mt_flows = st.session_state[f"{state_prefix}_flows"]
-                mt_bucket_times = st.session_state[f"{state_prefix}_bucket_times"]
-                mt_bucket_prices = st.session_state[f"{state_prefix}_bucket_prices"]
-
-            fig_mt = build_maker_taker_bubble_chart(
-                mt_timestamps,
-                mt_strikes,
-                mt_flows,
-                mt_bucket_times,
-                mt_bucket_prices,
-                spot=spot,
-                title=f"{symbol} Maker-Taker {selected_exp} ({mt_ct})",
-            )
-        st.plotly_chart(fig_mt, use_container_width=True)
-
-
-def _render_active_gamma_view(
+def _render_active_gex_view(
     active_view: str,
     symbol: str,
     today: date,
@@ -852,7 +594,7 @@ def _render_active_gamma_view(
         _render_gamma_heatmap_view(symbol, today, include_0dte, range_pct, options_dir)
         return
     if active_view not in _SINGLE_EXPIRY_VIEWS:
-        raise ValueError(f"Unknown Gamma Map view: {active_view}")
+        raise ValueError(f"Unknown GEX view: {active_view}")
 
     if selected_exp_str is None:
         st.warning(f"No expirations available for {symbol}.")
@@ -862,18 +604,12 @@ def _render_active_gamma_view(
     if active_view == "Chains":
         _render_chains_view(symbol, selected_exp, range_pct, options_dir)
         return
-    if active_view == "Intraday":
-        _render_intraday_view(symbol, selected_exp, range_pct, options_dir)
-        return
-    if active_view == "Maker-Taker":
-        _render_maker_taker_view(symbol, selected_exp, range_pct, options_dir)
-        return
-    raise ValueError(f"Unknown Gamma Map view: {active_view}")
+    raise ValueError(f"Unknown GEX view: {active_view}")
 
 
-def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
+def render_gex_tab(options_dir: Path, candle_dir: Path) -> None:
     del candle_dir
-    st.subheader("Gamma Map")
+    st.subheader("GEX")
 
     @st.fragment(run_every="5m")
     def _render() -> None:
@@ -898,8 +634,8 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
         with col_chart:
             active_view = str(
                 st.segmented_control(
-                    "Gamma Map View",
-                    options=_GAMMA_MAP_VIEWS,
+                    "GEX View",
+                    options=_GEX_VIEWS,
                     default="GEX",
                     selection_mode="single",
                     key="gm_view",
@@ -914,7 +650,7 @@ def render_gamma_map_tab(options_dir: Path, candle_dir: Path) -> None:
                 selected_exp_str = _select_single_expiry(symbol, today, options_dir)
 
         with col_chart:
-            _render_active_gamma_view(
+            _render_active_gex_view(
                 active_view=active_view,
                 symbol=symbol,
                 today=today,

@@ -9,11 +9,14 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+from trade_dash.calc.flow import compute_intraday_flow
 from trade_dash.calc.flow_profile import compute_flow_profile
 from trade_dash.calc.flow_tape import compute_flow_tape
+from trade_dash.charts.flow_heatmap import build_flow_heatmap_chart
 from trade_dash.charts.flow_profile import build_flow_profile_chart
 from trade_dash.charts.flow_tape import build_flow_tape_chart
 from trade_dash.data.options import (
+    find_all_snapshots_for_expiry,
     find_snapshots_for_expiry_on_date,
     list_expirations,
     list_snapshot_dates,
@@ -209,6 +212,84 @@ def _render_flow_profile_view(
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _render_intraday_flow_view(
+    symbol: str,
+    selected_exp: date,
+    sample_date: date,
+    spot: float,
+    range_pct: float,
+    options_dir: Path,
+) -> None:
+    all_expiry_snapshots = find_all_snapshots_for_expiry(
+        symbol,
+        expiry=selected_exp,
+        data_dir=options_dir,
+    )
+
+    col_ct, col_wt = st.columns([3, 1])
+    with col_ct:
+        ct_filter = str(
+            st.radio(
+                "Contract type",
+                options=["ALL", "CALL", "PUT"],
+                horizontal=True,
+                key="fl_intraday_ct",
+            )
+        )
+    with col_wt:
+        weight_by_delta = st.toggle("Weight by delta", value=True, key="fl_intraday_weight_delta")
+    bucket_minutes = int(
+        st.select_slider(
+            "Sample interval (minutes)",
+            options=[1, 5, 10, 15, 20, 25, 30],
+            value=5,
+            key="fl_intraday_bucket",
+        )
+    )
+
+    flow_key = (
+        symbol,
+        selected_exp.isoformat(),
+        round(spot),
+        round(spot * range_pct / 100),
+        ct_filter,
+        bucket_minutes,
+        weight_by_delta,
+        sample_date,
+        len(all_expiry_snapshots),
+    )
+    with st.spinner("Computing intraday flow..."):
+        if st.session_state.get("_fl_intraday_key") != flow_key:
+            flow_strikes, flow_timestamps, flow_matrix, flow_prices = compute_intraday_flow(
+                all_expiry_snapshots,
+                spot=spot,
+                moneyness_pct=range_pct / 100,
+                contract_filter=ct_filter,
+                bucket_minutes=bucket_minutes,
+                weight_by_delta=weight_by_delta,
+                target_date=sample_date,
+            )
+            st.session_state["_fl_intraday_key"] = flow_key
+            st.session_state["_fl_intraday_strikes"] = flow_strikes
+            st.session_state["_fl_intraday_timestamps"] = flow_timestamps
+            st.session_state["_fl_intraday_matrix"] = flow_matrix
+            st.session_state["_fl_intraday_prices"] = flow_prices
+        else:
+            flow_strikes = st.session_state["_fl_intraday_strikes"]
+            flow_timestamps = st.session_state["_fl_intraday_timestamps"]
+            flow_matrix = st.session_state["_fl_intraday_matrix"]
+            flow_prices = st.session_state["_fl_intraday_prices"]
+
+        fig_flow = build_flow_heatmap_chart(
+            flow_strikes,
+            flow_timestamps,
+            flow_matrix,
+            prices=flow_prices,
+            title=f"{symbol} Intraday Flow {selected_exp}",
+        )
+    st.plotly_chart(fig_flow, use_container_width=True)
+
+
 def render_flow_tab(options_dir: Path) -> None:
     """Render the Flow tab with Flow Tape and Flow Profile charts."""
     st.subheader("Flow")
@@ -309,7 +390,7 @@ def render_flow_tab(options_dir: Path) -> None:
         active_view = str(
             st.segmented_control(
                 "Flow View",
-                options=["Flow Tape", "Flow Profile"],
+                options=["Flow Tape", "Flow Profile", "Intraday Flow"],
                 default="Flow Tape",
                 selection_mode="single",
                 key="fl_view",
@@ -327,7 +408,7 @@ def render_flow_tab(options_dir: Path) -> None:
                 selected_exp=selected_exp,
                 ema_span=ema_span,
             )
-        else:
+        elif active_view == "Flow Profile":
             _render_flow_profile_view(
                 snapshots,
                 sample_date=sample_date,
@@ -336,4 +417,13 @@ def render_flow_tab(options_dir: Path) -> None:
                 selected_exp=selected_exp,
                 spot=spot,
                 range_pct=range_pct,
+            )
+        else:
+            _render_intraday_flow_view(
+                symbol=_SYMBOL,
+                selected_exp=selected_exp,
+                sample_date=sample_date,
+                spot=spot,
+                range_pct=range_pct,
+                options_dir=options_dir,
             )
