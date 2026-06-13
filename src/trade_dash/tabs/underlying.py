@@ -1,4 +1,4 @@
-"""Regime tab: candlestick price chart for ES Futures or SPX."""
+"""Underlying tab: candlestick price chart for ES Futures or SPX."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from trade_dash.calc.gex import (
     find_zero_gamma_level,
     net_gex_by_price,
 )
-from trade_dash.charts.price import build_candlestick_chart
+from trade_dash.charts.es_chart import build_es_candlestick_chart
+from trade_dash.charts.spx_chart import build_spx_candlestick_chart
 from trade_dash.config import OPTIONS_DIR, SCHWAB_CANDLE_DIR
 from trade_dash.data.candles import list_available_dates, load_candles
 from trade_dash.data.options import find_latest_snapshots, load_options_snapshot
@@ -34,7 +35,6 @@ def _x_range(
 ) -> list[object]:
     """Return xaxis range to align with the selected display window."""
     if freq in _INTRADAY_FREQS:
-        # Convert to tz-naive CT times for comparison.
         dts = df["datetime"]
         if dts.dt.tz is not None:
             times_ct = dts.dt.tz_convert("America/Chicago").dt.tz_localize(None).dt.time.tolist()
@@ -43,7 +43,6 @@ def _x_range(
         n = len(df)
         if time_range is not None:
             t_start, t_end = time_range
-            # Find first row where time is within [t_start, t_end]
             in_window = [t_start <= t <= t_end for t in times_ct]
             start_pos = next((i for i, v in enumerate(in_window) if v), 0)
             end_pos = next((i for i in range(n - 1, -1, -1) if in_window[i]), n - 1)
@@ -107,14 +106,14 @@ def _load_gex_levels(
     }
 
 
-def render_regime_tab(candle_dir: Path) -> None:
-    st.subheader("Regime")
+def render_underlying_tab(candle_dir: Path) -> None:
+    st.subheader("Underlying")
 
     col_ctrl, col_chart = st.columns([1, 3])
 
     with col_ctrl:
         ticker_label = (
-            st.selectbox("Ticker", _TICKER_OPTIONS, index=0, key="reg_ticker") or "ES Futures"
+            st.selectbox("Ticker", _TICKER_OPTIONS, index=1, key="reg_ticker") or "SPX"
         )
         freq = (
             st.selectbox("Frequency", ["1min", "5min", "30min", "day"], index=1, key="reg_freq")
@@ -124,9 +123,10 @@ def render_regime_tab(candle_dir: Path) -> None:
         symbol = _TICKER_SYMBOL[ticker_label]
         data_dir = SCHWAB_CANDLE_DIR if ticker_label == "ES Futures" else candle_dir
 
-        # Aggregate window + 0DTE toggle — only relevant for SPX (options data)
+        # Aggregate window, 0DTE toggle, and GEX toggle — only relevant for SPX
         days_out: int | None = None
         include_0dte: bool = True
+        show_gex: bool = False
         if ticker_label == "SPX":
             days_out = int(
                 st.radio(
@@ -137,6 +137,7 @@ def render_regime_tab(candle_dir: Path) -> None:
                 )
             )
             include_0dte = st.toggle("Include 0DTE", value=True, key="reg_0dte")
+            show_gex = st.toggle("Show GEX levels", value=False, key="reg_show_gex")
 
         try:
             start_avail, end_avail = list_available_dates(symbol, str(freq), data_dir=data_dir)
@@ -171,12 +172,6 @@ def render_regime_tab(candle_dir: Path) -> None:
             st.warning("No data for selected range.")
         return
 
-    # Load GEX levels for SPX
-    gex_levels: dict[str, float | None] = {}
-    if ticker_label == "SPX" and days_out is not None:
-        with st.spinner("Loading GEX levels..."):
-            gex_levels = _load_gex_levels("SPXW", date.today(), days_out, OPTIONS_DIR, include_0dte)
-
     intraday = freq in _INTRADAY_FREQS
     intraday_time_range: tuple[time, time] | None = None
     if intraday:
@@ -184,11 +179,25 @@ def render_regime_tab(candle_dir: Path) -> None:
         intraday_time_range = (tr[0], tr[1])
 
     with col_chart:
-        fig = build_candlestick_chart(
-            df,
-            title=f"{ticker_label} ({freq})",
-            freq=str(freq),
-            **gex_levels,
-        )
+        if ticker_label == "SPX":
+            gex_levels: dict[str, float | None] = {}
+            if show_gex and days_out is not None:
+                with st.spinner("Loading GEX levels..."):
+                    gex_levels = _load_gex_levels(
+                        "SPXW", date.today(), days_out, OPTIONS_DIR, include_0dte
+                    )
+            fig = build_spx_candlestick_chart(
+                df,
+                title=f"{ticker_label} ({freq})",
+                freq=str(freq),
+                **gex_levels,
+            )
+        else:
+            fig = build_es_candlestick_chart(
+                df,
+                title=f"{ticker_label} ({freq})",
+                freq=str(freq),
+            )
+
         fig.update_xaxes(range=_x_range(df, start_sel, end_sel, str(freq), intraday_time_range))
         st.plotly_chart(fig, use_container_width=True)
