@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -25,13 +25,32 @@ _TICKER_OPTIONS = ["ES Futures", "SPX"]
 _TICKER_SYMBOL = {"ES Futures": "^ES", "SPX": "SPX"}
 
 
-def _x_range(df: pd.DataFrame, start_sel: date, end_sel: date, freq: str) -> list[object]:
+def _x_range(
+    df: pd.DataFrame,
+    start_sel: date,
+    end_sel: date,
+    freq: str,
+    time_range: tuple[time, time] | None = None,
+) -> list[object]:
     """Return xaxis range to align with the selected display window."""
     if freq in _INTRADAY_FREQS:
-        start_ts = pd.Timestamp(start_sel, tz="UTC")
-        mask = df["datetime"] >= start_ts
-        display_start = int(mask.idxmax()) if mask.any() else 0
-        return [display_start - 0.5, len(df) - 0.5]
+        # Convert to tz-naive CT times for comparison.
+        dts = df["datetime"]
+        if dts.dt.tz is not None:
+            times_ct = dts.dt.tz_convert("America/Chicago").dt.tz_localize(None).dt.time.tolist()
+        else:
+            times_ct = dts.dt.time.tolist()
+        n = len(df)
+        if time_range is not None:
+            t_start, t_end = time_range
+            # Find first row where time is within [t_start, t_end]
+            in_window = [t_start <= t <= t_end for t in times_ct]
+            start_pos = next((i for i, v in enumerate(in_window) if v), 0)
+            end_pos = next((i for i in range(n - 1, -1, -1) if in_window[i]), n - 1)
+        else:
+            start_pos = 0
+            end_pos = n - 1
+        return [start_pos - 0.5, end_pos + 0.5]
     else:
         return [
             pd.Timestamp(start_sel, tz="UTC"),
@@ -129,6 +148,16 @@ def render_regime_tab(candle_dir: Path) -> None:
             sel_date = st.date_input("Date", value=end_avail.date(), key="reg_date")
             start_sel = sel_date
             end_sel = sel_date + timedelta(days=1)
+            if "reg_time_range" not in st.session_state:
+                st.session_state["reg_time_range"] = (time(8, 30), time(15, 0))
+            st.slider(
+                "Time range (CT)",
+                min_value=time(0, 0),
+                max_value=time(23, 30),
+                value=st.session_state["reg_time_range"],
+                step=timedelta(minutes=30),
+                key="reg_time_range",
+            )
         else:
             today = date.today()
             default_start = max(date(today.year, today.month, 1), start_avail.date())
@@ -148,6 +177,12 @@ def render_regime_tab(candle_dir: Path) -> None:
         with st.spinner("Loading GEX levels..."):
             gex_levels = _load_gex_levels("SPXW", date.today(), days_out, OPTIONS_DIR, include_0dte)
 
+    intraday = freq in _INTRADAY_FREQS
+    intraday_time_range: tuple[time, time] | None = None
+    if intraday:
+        tr = st.session_state.get("reg_time_range", (time(8, 30), time(16, 0)))
+        intraday_time_range = (tr[0], tr[1])
+
     with col_chart:
         fig = build_candlestick_chart(
             df,
@@ -155,5 +190,5 @@ def render_regime_tab(candle_dir: Path) -> None:
             freq=str(freq),
             **gex_levels,
         )
-        fig.update_xaxes(range=_x_range(df, start_sel, end_sel, str(freq)))
+        fig.update_xaxes(range=_x_range(df, start_sel, end_sel, str(freq), intraday_time_range))
         st.plotly_chart(fig, use_container_width=True)

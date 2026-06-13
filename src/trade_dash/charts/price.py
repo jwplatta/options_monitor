@@ -4,19 +4,64 @@ from __future__ import annotations
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from trade_dash.calc.ma import sma, validate_windows
 
 _INTRADAY_FREQS = {"1min", "5min", "30min"}
 
 
-def _day_boundary_ticks(datetimes: pd.Series) -> tuple[list[int], list[str]]:
-    """One tick per trading day for integer-index intraday charts."""
-    dates = datetimes.dt.normalize()  # vectorized date extraction
-    changed = pd.Series([True], index=[dates.index[0]]).reindex(dates.index, fill_value=False)
-    changed |= dates != dates.shift(1)
-    tick_vals = changed[changed].index.tolist()
-    tick_text = dates[changed].dt.strftime("%-m/%-d").tolist()
+def _to_ct(datetimes: pd.Series) -> pd.Series:
+    """Convert a UTC-aware (or naive) datetime series to tz-naive CT datetimes."""
+    if datetimes.dt.tz is not None:
+        return datetimes.dt.tz_convert("America/Chicago").dt.tz_localize(None)
+    return datetimes
+
+
+def _intraday_ticks(datetimes: pd.Series, freq: str) -> tuple[list[int], list[str]]:
+    """Time-based ticks for integer-index intraday charts (labels in CT).
+
+    Shows one label per hour for 1min/5min data, one per 2 hours for 30min data.
+    Day boundaries get a date label; within-day ticks get HH:MM CT.
+    """
+    ct = _to_ct(datetimes)
+    interval_minutes = {"1min": 60, "5min": 60, "30min": 120}.get(freq, 60)
+    tick_vals: list[int] = []
+    tick_text: list[str] = []
+    prev_date: pd.Timestamp | None = None
+    for idx, ts in enumerate(ct):
+        minute = ts.hour * 60 + ts.minute
+        on_boundary = minute % interval_minutes == 0
+        is_day_start = prev_date is None or ts.normalize() != prev_date
+        if is_day_start or on_boundary:
+            tick_vals.append(idx)
+            if is_day_start:
+                tick_text.append(ts.strftime("%-m/%-d"))
+            else:
+                tick_text.append(ts.strftime("%H:%M"))
+        if is_day_start:
+            prev_date = ts.normalize()
+    return tick_vals, tick_text
+
+
+def _daily_ticks(datetimes: pd.Series) -> tuple[list[pd.Timestamp], list[str]]:
+    """Adaptive date ticks for daily charts based on date-range width."""
+    n_days = len(datetimes)
+    if n_days <= 30:
+        step = 1
+        fmt = "%-m/%-d"
+    elif n_days <= 90:
+        step = 5
+        fmt = "%-m/%-d"
+    elif n_days <= 365:
+        step = 15
+        fmt = "%-m/%-d"
+    else:
+        step = 30
+        fmt = "%b '%y"
+    indices = range(0, n_days, step)
+    tick_vals = [datetimes.iloc[i] for i in indices]
+    tick_text = [datetimes.iloc[i].strftime(fmt) for i in indices]
     return tick_vals, tick_text
 
 
@@ -35,7 +80,7 @@ def build_sma_price_chart(
     intraday = freq in _INTRADAY_FREQS
     if intraday:
         x = list(range(len(candles)))
-        tick_vals, tick_text = _day_boundary_ticks(candles["datetime"])
+        tick_vals, tick_text = _intraday_ticks(candles["datetime"], freq)
         hover_labels = candles["datetime"].dt.strftime("%m/%d %H:%M").tolist()
         hover_tmpl = "%{text}<br>%{y:.2f}<extra></extra>"
     else:
@@ -104,15 +149,29 @@ def build_candlestick_chart(
     intraday = freq in _INTRADAY_FREQS
     if intraday:
         x = list(range(len(candles)))
-        tick_vals, tick_text = _day_boundary_ticks(candles["datetime"])
-        hover_labels = candles["datetime"].dt.strftime("%m/%d %H:%M").tolist()
+        tick_vals, tick_text = _intraday_ticks(candles["datetime"], freq)
+        hover_labels = _to_ct(candles["datetime"]).dt.strftime("%m/%d %H:%M CT").tolist()
         hover_tmpl = "%{text}<extra></extra>"
     else:
         x = candles["datetime"]  # type: ignore[assignment]
+        tick_vals_daily, tick_text_daily = _daily_ticks(candles["datetime"])
         hover_labels = None
         hover_tmpl = None
 
-    fig = go.Figure(
+    has_volume = "volume" in candles.columns and candles["volume"].notna().any()
+
+    if has_volume:
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            shared_xaxes=True,
+            row_heights=[0.65, 0.35],
+            vertical_spacing=0.02,
+        )
+    else:
+        fig = make_subplots(rows=1, cols=1)
+
+    fig.add_trace(
         go.Candlestick(
             x=x,
             open=candles["open"],
@@ -123,8 +182,24 @@ def build_candlestick_chart(
             hovertemplate=hover_tmpl,
             increasing_line_color="limegreen",
             decreasing_line_color="tomato",
-        )
+        ),
+        row=1,
+        col=1,
     )
+
+    if has_volume:
+        fig.add_trace(
+            go.Bar(
+                x=x,
+                y=candles["volume"],
+                marker_color="steelblue",
+                opacity=0.7,
+                showlegend=False,
+                hoverinfo="skip",
+            ),
+            row=2,
+            col=1,
+        )
 
     _WALL_LINES: list[tuple[float | None, str, str, str]] = [
         (raw_call_wall, f"CW {raw_call_wall}", "limegreen", "solid"),
@@ -143,16 +218,23 @@ def build_candlestick_chart(
                 annotation_text=label,
                 annotation_position="right",
                 annotation_font_color=color,
+                row=1,  # type: ignore[arg-type]
             )
 
     fig.update_layout(
         title=title,
-        xaxis_title="Date/Time",
         yaxis_title="Price",
         template="plotly_dark",
         margin={"l": 40, "r": 20, "t": 40, "b": 40},
         xaxis_rangeslider_visible=False,
     )
+    if has_volume:
+        fig.update_yaxes(title_text="Volume", row=2, col=1)
+        fig.update_xaxes(title_text="Date/Time", row=2, col=1)
+    else:
+        fig.update_xaxes(title_text="Date/Time", row=1, col=1)
     if intraday:
         fig.update_xaxes(tickvals=tick_vals, ticktext=tick_text, tickangle=-45)
+    else:
+        fig.update_xaxes(tickvals=tick_vals_daily, ticktext=tick_text_daily, tickangle=-45)
     return fig
