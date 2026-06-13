@@ -27,6 +27,7 @@ def compute_flow_profile(
     mode: str = "lookback",
     contract_filter: str = "BOTH",
     ema_span: int = 20,
+    as_of: datetime | None = None,
 ) -> tuple[list[float], list[float], list[float]]:
     """Compute per-strike aggregated flow for a single trading session.
 
@@ -34,6 +35,7 @@ def compute_flow_profile(
     strikes: sorted unique strike values present in the result.
     call/put_flow_by_strike: parallel arrays aligned to strikes.
     mode: "lookback" (volume delta over lookback_window) or "cumulative" (total volume).
+    as_of: if provided, only snapshots with timestamp <= as_of are included.
     """
     if mode not in ("lookback", "cumulative"):
         raise ValueError(f"mode must be 'lookback' or 'cumulative', got {mode!r}")
@@ -46,6 +48,8 @@ def compute_flow_profile(
         ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date),
         key=lambda x: x[0],
     )
+    if as_of is not None:
+        session = [(ts, path) for ts, path in session if ts <= as_of]
     if not session:
         return [], [], []
 

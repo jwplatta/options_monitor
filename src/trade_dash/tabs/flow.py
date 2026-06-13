@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -21,7 +22,13 @@ from trade_dash.data.options import (
 
 _SYMBOL = "SPXW"
 _CONTRACT_MAP = {"Both": "BOTH", "Calls": "CALL", "Puts": "PUT"}
-_MODE_MAP = {"New Flow": "lookback", "Cumulative Flow": "cumulative"}
+_CHICAGO = ZoneInfo("America/Chicago")
+
+
+def _to_chicago(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.astimezone(_CHICAGO).replace(tzinfo=None)
 
 
 def _get_spot(snapshots: list[tuple[datetime, Path]]) -> float | None:
@@ -32,7 +39,7 @@ def _get_spot(snapshots: list[tuple[datetime, Path]]) -> float | None:
     return float(spot_series.iloc[0]) if not spot_series.empty else None
 
 
-def _render_flow_tape_view(
+def _load_tape(
     snapshots: list[tuple[datetime, Path]],
     spot: float,
     sample_date: date,
@@ -40,7 +47,9 @@ def _render_flow_tape_view(
     mode: str,
     contract_filter: str,
     selected_exp: date,
-) -> None:
+    ema_span: int,
+) -> tuple[list[datetime], list[float], list[float], list[float], list[float]]:
+    """Compute (or retrieve from cache) flow tape data for the given parameters."""
     tape_key = (
         _SYMBOL,
         selected_exp.isoformat(),
@@ -48,36 +57,63 @@ def _render_flow_tape_view(
         lookback_window,
         mode,
         contract_filter,
+        ema_span,
         len(snapshots),
     )
     if st.session_state.get("_fl_tape_key") != tape_key:
         with st.spinner("Computing flow tape..."):
-            timestamps, call_flow, put_flow = compute_flow_tape(
+            timestamps, call_flow, put_flow, raw_call, raw_put = compute_flow_tape(
                 snapshots,
                 spot=spot,
                 sample_date=sample_date,
                 lookback_window=lookback_window,
                 mode=mode,
                 contract_filter=contract_filter,
+                ema_span=ema_span,
             )
         st.session_state["_fl_tape_key"] = tape_key
         st.session_state["_fl_tape_timestamps"] = timestamps
         st.session_state["_fl_tape_call"] = call_flow
         st.session_state["_fl_tape_put"] = put_flow
+        st.session_state["_fl_tape_raw_call"] = raw_call
+        st.session_state["_fl_tape_raw_put"] = raw_put
     else:
         timestamps = st.session_state["_fl_tape_timestamps"]
         call_flow = st.session_state["_fl_tape_call"]
         put_flow = st.session_state["_fl_tape_put"]
+        raw_call = st.session_state["_fl_tape_raw_call"]
+        raw_put = st.session_state["_fl_tape_raw_put"]
+    return timestamps, call_flow, put_flow, raw_call, raw_put
 
+
+def _render_flow_tape_view(
+    snapshots: list[tuple[datetime, Path]],
+    spot: float,
+    sample_date: date,
+    lookback_window: int,
+    contract_filter: str,
+    selected_exp: date,
+    ema_span: int,
+) -> None:
+    timestamps, new_call, new_put, raw_call, raw_put = _load_tape(
+        snapshots, spot, sample_date, lookback_window, "lookback",
+        contract_filter, selected_exp, ema_span,
+    )
+    _, cum_call, cum_put, _, _ = _load_tape(
+        snapshots, spot, sample_date, lookback_window, "cumulative",
+        contract_filter, selected_exp, ema_span,
+    )
     if not timestamps:
         st.warning("No flow data for selected date/expiry.")
         return
-
     fig = build_flow_tape_chart(
         timestamps,
-        call_flow,
-        put_flow,
-        title=f"Flow Tape — {_SYMBOL} {selected_exp.isoformat()} ({sample_date.isoformat()})",
+        new_call,
+        new_put,
+        cum_call,
+        cum_put,
+        raw_call,
+        raw_put,
     )
     st.plotly_chart(fig, use_container_width=True)
 
@@ -86,20 +122,41 @@ def _render_flow_profile_view(
     snapshots: list[tuple[datetime, Path]],
     sample_date: date,
     lookback_window: int,
-    mode: str,
     contract_filter: str,
     selected_exp: date,
     spot: float,
     range_pct: float,
 ) -> None:
+    # Build ordered list of session snapshot timestamps for the rewind slider.
+    session_snapshots = sorted(
+        [(ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date],
+        key=lambda x: x[0],
+    )
+    if not session_snapshots:
+        st.warning("No flow data for selected date/expiry.")
+        return
+
+    session_ts = [ts for ts, _ in session_snapshots]
+    session_ts_ct = [_to_chicago(ts) for ts in session_ts]
+    ts_labels = [t.strftime("%H:%M") for t in session_ts_ct]
+
+    # Default to latest snapshot; slider lets user rewind.
+    selected_idx = st.select_slider(
+        "As of",
+        options=list(range(len(ts_labels))),
+        value=len(ts_labels) - 1,
+        format_func=lambda i: ts_labels[i],
+        key="fl_profile_as_of",
+    )
+    as_of_ts = session_ts[selected_idx]
+
     profile_key = (
         _SYMBOL,
         selected_exp.isoformat(),
         sample_date.isoformat(),
         lookback_window,
-        mode,
         contract_filter,
-        len(snapshots),
+        as_of_ts.isoformat(),
         range_pct,
     )
     if st.session_state.get("_fl_profile_key") != profile_key:
@@ -108,8 +165,8 @@ def _render_flow_profile_view(
                 snapshots,
                 sample_date=sample_date,
                 lookback_window=lookback_window,
-                mode=mode,
                 contract_filter=contract_filter,
+                as_of=as_of_ts,
             )
         st.session_state["_fl_profile_key"] = profile_key
         st.session_state["_fl_profile_strikes"] = strikes
@@ -139,14 +196,14 @@ def _render_flow_profile_view(
     else:
         strikes_plot, call_plot, put_plot = strikes, call_flow, put_flow
 
-    mode_label = "Lookback" if mode == "lookback" else "Cumulative"
+    as_of_label = session_ts_ct[selected_idx].strftime("%H:%M")
     fig = build_flow_profile_chart(
         strikes_plot,
         call_plot,
         put_plot,
         title=(
             f"Flow Profile — {_SYMBOL} {selected_exp.isoformat()} "
-            f"({sample_date.isoformat()}, {mode_label})"
+            f"({sample_date.isoformat()} as of {as_of_label})"
         ),
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -181,9 +238,7 @@ def render_flow_tab(options_dir: Path) -> None:
             st.error("No expirations available for selected date.")
             return
 
-        default_exp_idx = next(
-            (i for i, e in enumerate(available_expiries) if e == sample_date), 0
-        )
+        default_exp_idx = next((i for i, e in enumerate(available_expiries) if e == sample_date), 0)
         selected_exp_str = st.selectbox(
             "Expiration",
             options=[e.isoformat() for e in available_expiries],
@@ -197,17 +252,17 @@ def render_flow_tab(options_dir: Path) -> None:
         lookback_window = int(
             st.select_slider(
                 "Lookback window (min)",
-                options=[1, 5, 15, 30],
+                options=[1, 5, 10, 15, 20],
                 value=5,
                 key="fl_lookback",
             )
         )
-        mode_label = str(
-            st.radio(
-                "Mode",
-                options=["New Flow", "Cumulative Flow"],
-                horizontal=True,
-                key="fl_mode",
+        ema_span = int(
+            st.select_slider(
+                "EMA span (min)",
+                options=[1, 5, 10, 15, 20],
+                value=5,
+                key="fl_ema_span",
             )
         )
         contract_label = str(
@@ -230,7 +285,6 @@ def render_flow_tab(options_dir: Path) -> None:
         )
 
     contract_filter = _CONTRACT_MAP[contract_label]
-    mode = _MODE_MAP[mode_label]
 
     # Load snapshots for the selected expiry on the selected date.
     snapshots = find_snapshots_for_expiry_on_date(
@@ -269,16 +323,15 @@ def render_flow_tab(options_dir: Path) -> None:
                 spot=spot,
                 sample_date=sample_date,
                 lookback_window=lookback_window,
-                mode=mode,
                 contract_filter=contract_filter,
                 selected_exp=selected_exp,
+                ema_span=ema_span,
             )
         else:
             _render_flow_profile_view(
                 snapshots,
                 sample_date=sample_date,
                 lookback_window=lookback_window,
-                mode=mode,
                 contract_filter=contract_filter,
                 selected_exp=selected_exp,
                 spot=spot,
