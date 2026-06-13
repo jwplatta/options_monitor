@@ -378,47 +378,55 @@ def _render_chains_view(
         strike_range=strike_range,
         title=f"{symbol} GEX {selected_exp}",
     )
-    st.subheader("GEX Single Expiry")
     st.plotly_chart(fig_single, use_container_width=True)
 
-    fig_skew = build_vol_skew_chart(
-        single_opts,
-        spot=spot,
-        strike_range=strike_range,
-        title=f"{symbol} Vol Skew {selected_exp}",
+    chain_view = st.segmented_control(
+        "Chain chart",
+        options=["Vol Skew", "Option Price", "Delta"],
+        default="Vol Skew",
+        selection_mode="single",
+        key="gm_chain_view",
+        label_visibility="collapsed",
     )
-    st.subheader("Volatility Skew")
-    st.plotly_chart(fig_skew, use_container_width=True)
 
-    price_series = st.radio(
-        "Price series",
-        options=["mark", "bid", "ask"],
-        horizontal=True,
-        key="gm_chain_price_series",
-    )
-    fig_price = build_vol_skew_chart(
-        single_opts,
-        spot=spot,
-        strike_range=strike_range,
-        title=f"{symbol} Option Price {selected_exp}",
-        value_col=price_series,
-        value_label="Price",
-    )
-    st.subheader("Option Price by Strike")
-    st.plotly_chart(fig_price, use_container_width=True)
+    if chain_view == "Vol Skew":
+        fig_skew = build_vol_skew_chart(
+            single_opts,
+            spot=spot,
+            strike_range=strike_range,
+            title=f"{symbol} Vol Skew {selected_exp}",
+        )
+        st.plotly_chart(fig_skew, use_container_width=True)
 
-    fig_delta = build_vol_skew_chart(
-        single_opts,
-        spot=spot,
-        strike_range=strike_range,
-        title=f"{symbol} Delta by Strike {selected_exp}",
-        value_col="delta",
-        value_label="Delta",
-        allow_negative=True,
-        abs_puts=True,
-    )
-    st.subheader("Delta by Strike")
-    st.plotly_chart(fig_delta, use_container_width=True)
+    elif chain_view == "Option Price":
+        price_series = st.radio(
+            "Price series",
+            options=["mark", "bid", "ask"],
+            horizontal=True,
+            key="gm_chain_price_series",
+        )
+        fig_price = build_vol_skew_chart(
+            single_opts,
+            spot=spot,
+            strike_range=strike_range,
+            title=f"{symbol} Option Price {selected_exp}",
+            value_col=price_series,
+            value_label="Price",
+        )
+        st.plotly_chart(fig_price, use_container_width=True)
+
+    elif chain_view == "Delta":
+        fig_delta = build_vol_skew_chart(
+            single_opts,
+            spot=spot,
+            strike_range=strike_range,
+            title=f"{symbol} Delta by Strike {selected_exp}",
+            value_col="delta",
+            value_label="Delta",
+            allow_negative=True,
+            abs_puts=True,
+        )
+        st.plotly_chart(fig_delta, use_container_width=True)
 
 
 def _render_history_view(
