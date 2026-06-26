@@ -23,6 +23,7 @@ _OPTIONS_DTYPES: dict[str, Any] = {
     "vega": "float64",
     "theoretical_volatility": "float64",
     "underlying_price": "float64",
+    "volatility": "float64",
     "mark": "float64",
     "bid": "float64",
     "ask": "float64",
