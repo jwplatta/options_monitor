@@ -10,12 +10,15 @@ import pandas as pd
 def build_iv_matrix(
     snapshots: dict[date, pd.DataFrame],
     contract_type: str = "CALL",
+    spot: float = 0.0,
 ) -> pd.DataFrame:
     """Pivot per-expiry snapshots into an (expiry × strike) IV matrix.
 
     Args:
         snapshots: Mapping of expiry date → options snapshot DataFrame.
-        contract_type: "CALL" or "PUT" (case-insensitive).
+        contract_type: "CALL", "PUT", or "OTM" (case-insensitive).
+            OTM uses calls for strikes >= spot and puts for strikes < spot.
+        spot: Current underlying price, required when contract_type is "OTM".
 
     Returns:
         DataFrame with expiration dates as index (sorted ascending),
@@ -24,7 +27,14 @@ def build_iv_matrix(
     ct = contract_type.upper()
     frames: list[pd.DataFrame] = []
     for expiry, df in snapshots.items():
-        filtered = df[df["contract_type"].str.upper() == ct].copy()
+        if ct == "OTM":
+            df_up = df[df["contract_type"].str.upper() == "CALL"].copy()
+            df_up = df_up[df_up["strike"] >= spot]
+            df_dn = df[df["contract_type"].str.upper() == "PUT"].copy()
+            df_dn = df_dn[df_dn["strike"] < spot]
+            filtered = pd.concat([df_up, df_dn], ignore_index=True)
+        else:
+            filtered = df[df["contract_type"].str.upper() == ct].copy()
         filtered = filtered.dropna(subset=["volatility", "strike"])
         filtered["expiration_date"] = expiry
         frames.append(filtered[["expiration_date", "strike", "volatility"]])

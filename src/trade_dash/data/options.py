@@ -177,6 +177,165 @@ def list_snapshot_dates_for_expiry(
     )
 
 
+@st.cache_data(ttl=1800)
+def find_all_snapshots_for_lookback(
+    symbol: str,
+    lookback_days: int,
+    days_out: int = 90,
+    include_0dte: bool = True,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> dict[date, dict[date, list[tuple[datetime, Path]]]]:
+    """Return all snapshots per (sample_date, expiry) over a historical lookback window.
+
+    Single SQL query — avoids per-date round-trips. Caller can downsample as needed.
+
+    Returns:
+        {sample_date: {expiry_date: [(fetch_datetime, path), ...]}} sorted by time.
+    """
+    del data_dir
+    today = date.today()
+    lookback_start = today - timedelta(days=lookback_days * 2)
+
+    rows = _fetch_metadata_rows(
+        """
+        SELECT
+            DATE(last_observed_at) AS sample_date,
+            expiration_date,
+            last_observed_at,
+            path
+        FROM file_metadata_cache
+        WHERE dataset_type = ?
+          AND provider_name = ?
+          AND ticker = ?
+          AND last_observed_at >= ?
+          AND last_observed_at < ?
+          AND last_observed_at IS NOT NULL
+        ORDER BY sample_date ASC, expiration_date ASC, last_observed_at ASC
+        """,
+        (
+            _OPTIONS_DATASET_TYPE,
+            _OPTIONS_PROVIDER,
+            symbol,
+            lookback_start.isoformat(),
+            today.isoformat(),
+        ),
+        metadata_db_path,
+    )
+
+    result: dict[date, dict[date, list[tuple[datetime, Path]]]] = {}
+    for row in rows:
+        sample_dt = date.fromisoformat(str(row["sample_date"]))
+        expiry_dt = date.fromisoformat(str(row["expiration_date"]))
+        dte = (expiry_dt - sample_dt).days
+        if dte < 0:
+            continue
+        if not include_0dte and dte == 0:
+            continue
+        if dte > days_out:
+            continue
+        fetch_dt = datetime.fromisoformat(str(row["last_observed_at"]))
+        result.setdefault(sample_dt, {}).setdefault(expiry_dt, []).append(
+            (fetch_dt, Path(str(row["path"])))
+        )
+
+    # Keep only the last lookback_days sample dates
+    all_sample_dates = sorted(result)
+    if len(all_sample_dates) > lookback_days:
+        keep = set(all_sample_dates[-lookback_days:])
+        result = {d: v for d, v in result.items() if d in keep}
+
+    return result
+
+
+@st.cache_data(ttl=1800)
+def find_eod_snapshots_for_lookback(
+    symbol: str,
+    lookback_days: int,
+    days_out: int = 90,
+    include_0dte: bool = True,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> dict[date, dict[date, Path]]:
+    """Return end-of-day snapshots for all expiries over a historical lookback window.
+
+    Uses a single SQL query to fetch the latest snapshot per (sample_date, expiry)
+    across the full lookback period, avoiding per-date round-trips to the metadata DB.
+
+    Args:
+        symbol: Option symbol (e.g. "SPXW").
+        lookback_days: Number of trading days to look back from today.
+        days_out: Max DTE to include on each sample date.
+        include_0dte: Whether to include same-day expirations.
+        data_dir: Unused (kept for API consistency).
+        metadata_db_path: Override for metadata DB path.
+
+    Returns:
+        {sample_date: {expiry_date: path}} — one path per (sample_date, expiry).
+    """
+    del data_dir
+    today = date.today()
+    lookback_start = today - timedelta(days=lookback_days * 2)  # 2x buffer for weekends/holidays
+
+    rows = _fetch_metadata_rows(
+        """
+        SELECT sample_date, expiration_date, path
+        FROM (
+            SELECT
+                DATE(last_observed_at) AS sample_date,
+                expiration_date,
+                path,
+                ROW_NUMBER() OVER (
+                    PARTITION BY DATE(last_observed_at), expiration_date
+                    ORDER BY last_observed_at DESC, path DESC
+                ) AS row_num
+            FROM file_metadata_cache
+            WHERE dataset_type = ?
+              AND provider_name = ?
+              AND ticker = ?
+              AND last_observed_at >= ?
+              AND last_observed_at < ?
+        )
+        WHERE row_num = 1
+        ORDER BY sample_date ASC, expiration_date ASC
+        """,
+        (
+            _OPTIONS_DATASET_TYPE,
+            _OPTIONS_PROVIDER,
+            symbol,
+            lookback_start.isoformat(),
+            today.isoformat(),
+        ),
+        metadata_db_path,
+    )
+
+    result: dict[date, dict[date, Path]] = {}
+    for row in rows:
+        sample_dt = date.fromisoformat(str(row["sample_date"]))
+        expiry_dt = date.fromisoformat(str(row["expiration_date"]))
+
+        # Filter: expiry must be within days_out of sample date
+        dte = (expiry_dt - sample_dt).days
+        if dte < 0:
+            continue
+        if not include_0dte and dte == 0:
+            continue
+        if dte > days_out:
+            continue
+
+        if sample_dt not in result:
+            result[sample_dt] = {}
+        result[sample_dt][expiry_dt] = Path(str(row["path"]))
+
+    # Keep only the last lookback_days sample dates
+    all_sample_dates = sorted(result)
+    if len(all_sample_dates) > lookback_days:
+        keep = set(all_sample_dates[-lookback_days:])
+        result = {d: v for d, v in result.items() if d in keep}
+
+    return result
+
+
 @st.cache_data(ttl=30)
 def find_latest_snapshots(
     symbol: str,
