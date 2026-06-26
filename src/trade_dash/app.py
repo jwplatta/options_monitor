@@ -11,14 +11,14 @@ from trade_dash.tabs.history import render_history_tab
 from trade_dash.tabs.underlying import render_underlying_tab
 from trade_dash.tabs.vol import render_vol_tab
 
-_TOP_LEVEL_TABS = ["Underlying", "Vol", "GEX", "History", "Flow"]
+_TOP_LEVEL_TABS = ["Underlying", "Vol", "GEX", "Flow", "History"]
 
 _TAB_SPINNER_MSG: dict[str, str] = {
     "Underlying": "Loading Underlying...",
-    "Vol":       "Loading Vol...",
-    "GEX":       "Loading GEX...",
-    "History":   "Loading History...",
-    "Flow":      "Loading Flow...",
+    "Vol": "Loading Vol...",
+    "GEX": "Loading GEX...",
+    "History": "Loading History...",
+    "Flow": "Loading Flow...",
 }
 
 
