@@ -18,3 +18,4 @@ htmlcov/
 .gemini/skills
 .claude/settings.local.json
 .codex
+/tmp
