@@ -316,6 +316,7 @@ def find_aggregate_wall_strikes(
     return call_wall, put_wall
 
 
+# NOTE: unused — superseded by find_decision_zones for strike selection
 def find_top_aggregate_gamma_strikes(
     opts: pd.DataFrame,
     spot: float,

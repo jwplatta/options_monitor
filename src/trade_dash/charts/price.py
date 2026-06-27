@@ -14,6 +14,7 @@ from trade_dash.charts._chart_utils import to_ct as _to_ct
 _INTRADAY_FREQS = {"1min", "5min", "30min"}
 
 
+# NOTE: unused — not wired into any tab
 def build_sma_price_chart(
     candles: pd.DataFrame,
     fast_window: int,
@@ -82,6 +83,7 @@ def build_sma_price_chart(
     return fig
 
 
+# NOTE: unused — not wired into any tab
 def build_candlestick_chart(
     candles: pd.DataFrame,
     title: str = "Candlestick",

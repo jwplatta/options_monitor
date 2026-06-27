@@ -47,6 +47,7 @@ def vix_spx_correlation(spx: pd.DataFrame, vix: pd.DataFrame) -> float:
     return float(pearsonr(merged["spx"].to_numpy(), merged["vix"].to_numpy()).statistic)
 
 
+# NOTE: unused — kept for potential future use in the Vol tab
 def expected_move(spot: float, vix9d_close: float) -> tuple[float, float]:
     """One-day expected move: ± spot * (VIX9D / 100) * sqrt(1/252).
 
