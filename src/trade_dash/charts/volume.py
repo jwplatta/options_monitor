@@ -24,6 +24,7 @@ def _day_boundary_ticks(datetimes: pd.Series) -> tuple[list[int], list[str]]:
     return tick_vals, tick_text
 
 
+# NOTE: unused — not wired into any tab
 def build_sma_volume_chart(
     candles: pd.DataFrame,
     title: str = "ES Volume",

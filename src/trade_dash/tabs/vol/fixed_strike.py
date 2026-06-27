@@ -13,11 +13,10 @@ from trade_dash.calc.fixed_strike_vol import build_iv_matrix
 from trade_dash.calc.iv_zscore import build_bucket_stats, compute_zscore_matrix
 from trade_dash.config import OPTIONS_DIR
 from trade_dash.data.options import (
-    find_all_snapshots_for_lookback,
+    find_downsampled_snapshots_for_lookback,
     find_latest_snapshots,
     load_options_snapshot,
 )
-from trade_dash.utils import downsample_snapshots
 
 
 @st.cache_data(ttl=1800)
@@ -29,17 +28,17 @@ def _load_historical_frames(
 ) -> tuple[list[pd.DataFrame], list[date]]:
     """Load interval-downsampled historical chain snapshots for z-score bucket building.
 
-    Uses a single metadata query then downsamples in Python. Returns (frames, sample_dates).
+    Downsampling is performed in SQL. Returns (frames, sample_dates).
     """
-    all_snaps = find_all_snapshots_for_lookback(
-        symbol, lookback_days, days_out=90, include_0dte=True, data_dir=options_dir
+    all_snaps = find_downsampled_snapshots_for_lookback(
+        symbol, lookback_days, interval_minutes, days_out=90, include_0dte=True,
+        data_dir=options_dir,
     )
     frames: list[pd.DataFrame] = []
     sample_dates: list[date] = []
 
     for sample_date, expiry_grouped in sorted(all_snaps.items()):
-        downsampled = downsample_snapshots(expiry_grouped, interval_minutes)
-        for snaps in downsampled.values():
+        for snaps in expiry_grouped.values():
             for _, path in snaps:
                 try:
                     frames.append(load_options_snapshot(path))
@@ -52,7 +51,7 @@ def _load_historical_frames(
 
 def render_fixed_strike_tab(options_dir: Path = OPTIONS_DIR) -> None:
     """Render the Fixed Strike Vol subtab."""
-    c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
+    c1, c2, c3, c4, c5, c6 = st.columns([1, 1, 1, 1, 1, 1])
     with c1:
         fsv_days_out = int(
             st.radio("Days Out", [7, 14, 21, 30], index=3, horizontal=True, key="fsv_days_out")
@@ -67,17 +66,17 @@ def render_fixed_strike_tab(options_dir: Path = OPTIONS_DIR) -> None:
         )
     with c4:
         fsv_lookback = int(
-            st.selectbox("Lookback (days)", [10, 20, 30], index=2, key="fsv_lookback")
+            st.selectbox("Lookback (days)", [10, 20, 30, 60, 90], index=2, key="fsv_lookback")
         )
-        fsv_interval = int(
-            st.selectbox("Interval (min)", [30, 60], index=1, key="fsv_interval")
-        )
+        fsv_interval = int(st.selectbox("Interval (min)", [30, 60], index=1, key="fsv_interval"))
+    with c5:
+        fsv_include_0dte = st.toggle("Include 0DTE", value=True, key="fsv_include_0dte")
 
     snapshot_paths = find_latest_snapshots(
         "SPXW",
         start_date=date.today(),
         days_out=fsv_days_out,
-        include_0dte=True,
+        include_0dte=fsv_include_0dte,
         data_dir=options_dir,
     )
 
@@ -96,7 +95,7 @@ def render_fixed_strike_tab(options_dir: Path = OPTIONS_DIR) -> None:
         except FileNotFoundError:
             continue
 
-    with c5:
+    with c6:
         if spot:
             st.metric("Spot (SPXW)", f"{spot:,.2f}")
 

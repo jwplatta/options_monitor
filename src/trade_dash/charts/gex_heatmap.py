@@ -86,6 +86,7 @@ def compute_gex_history(
     return top_strikes, timestamps, matrix
 
 
+# NOTE: unused — superseded by the GEX bar chart in the GEX tab
 def build_gex_heatmap_chart(
     top_strikes: list[float],
     timestamps: list[datetime],

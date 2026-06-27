@@ -20,6 +20,7 @@ _MIN_BUBBLE_PX = 3.0
 _MAX_BUBBLE_PX = 40.0
 
 
+# NOTE: unused — planned feature, not yet wired into any tab
 def build_maker_taker_bubble_chart(
     timestamps: list[datetime],
     strikes: list[float],

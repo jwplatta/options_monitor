@@ -19,6 +19,7 @@ def _to_chicago(ts: datetime) -> datetime:
     return ts.astimezone(_CHICAGO).replace(tzinfo=None)
 
 
+# NOTE: unused — planned feature, not yet wired into any tab
 def compute_maker_taker_flow(
     snapshots: list[tuple[datetime, Path]],
     spot: float,

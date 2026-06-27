@@ -17,6 +17,7 @@ _COLORSCALE = [
 ]
 
 
+# NOTE: unused — planned feature, not yet wired into any tab
 def build_spread_heatmap_chart(
     strikes: list[float],
     timestamps: list[datetime],

@@ -249,6 +249,100 @@ def find_all_snapshots_for_lookback(
 
 
 @st.cache_data(ttl=1800)
+def find_downsampled_snapshots_for_lookback(
+    symbol: str,
+    lookback_days: int,
+    interval_minutes: int,
+    days_out: int = 90,
+    include_0dte: bool = True,
+    data_dir: Path = OPTIONS_DIR,
+    metadata_db_path: Path | None = None,
+) -> dict[date, dict[date, list[tuple[datetime, Path]]]]:
+    """Return interval-downsampled snapshots per (sample_date, expiry) over a lookback window.
+
+    Downsampling is performed in SQL: keeps the latest snapshot per
+    (sample_date, expiry, N-minute interval bucket). This avoids loading all raw
+    metadata into Python before downsampling.
+
+    Args:
+        symbol: Option symbol (e.g. "SPXW").
+        lookback_days: Number of calendar days to look back from today.
+        interval_minutes: Bucket width in minutes. Must divide evenly into 60.
+        days_out: Max DTE to include on each sample date.
+        include_0dte: Whether to include same-day expirations.
+        data_dir: Unused (kept for API consistency).
+        metadata_db_path: Override for metadata DB path.
+
+    Returns:
+        {sample_date: {expiry_date: [(fetch_datetime, path)]}} — one entry per interval
+        bucket, sorted by time ascending.
+    """
+    del data_dir
+    today = date.today()
+    lookback_start = today - timedelta(days=lookback_days * 2)
+
+    # Interval bucket: integer division of (hour*60 + minute) by interval_minutes.
+    # SQLite strftime('%H') returns zero-padded hour string; CAST to int for arithmetic.
+    rows = _fetch_metadata_rows(
+        """
+        SELECT sample_date, expiration_date, last_observed_at, path
+        FROM (
+            SELECT
+                DATE(last_observed_at)  AS sample_date,
+                expiration_date,
+                last_observed_at,
+                path,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        DATE(last_observed_at),
+                        expiration_date,
+                        (CAST(strftime('%H', last_observed_at) AS INTEGER) * 60
+                         + CAST(strftime('%M', last_observed_at) AS INTEGER))
+                        / ?
+                    ORDER BY last_observed_at DESC, path DESC
+                ) AS row_num
+            FROM file_metadata_cache
+            WHERE dataset_type = ?
+              AND provider_name = ?
+              AND ticker      = ?
+              AND last_observed_at >= ?
+              AND last_observed_at <  ?
+              AND last_observed_at IS NOT NULL
+        )
+        WHERE row_num = 1
+        ORDER BY sample_date ASC, expiration_date ASC, last_observed_at ASC
+        """,
+        (interval_minutes, _OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol,
+         lookback_start.isoformat(), today.isoformat()),
+        metadata_db_path,
+    )
+
+    result: dict[date, dict[date, list[tuple[datetime, Path]]]] = {}
+    for row in rows:
+        sample_dt = date.fromisoformat(str(row["sample_date"]))
+        expiry_dt = date.fromisoformat(str(row["expiration_date"]))
+        dte = (expiry_dt - sample_dt).days
+        if dte < 0:
+            continue
+        if not include_0dte and dte == 0:
+            continue
+        if dte > days_out:
+            continue
+        fetch_dt = datetime.fromisoformat(str(row["last_observed_at"]))
+        result.setdefault(sample_dt, {}).setdefault(expiry_dt, []).append(
+            (fetch_dt, Path(str(row["path"])))
+        )
+
+    all_sample_dates = sorted(result)
+    if len(all_sample_dates) > lookback_days:
+        keep = set(all_sample_dates[-lookback_days:])
+        result = {d: v for d, v in result.items() if d in keep}
+
+    return result
+
+
+# NOTE: unused — kept for potential EOD historical analysis features
+@st.cache_data(ttl=1800)
 def find_eod_snapshots_for_lookback(
     symbol: str,
     lookback_days: int,
