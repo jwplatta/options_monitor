@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=1.26",
     "plotly>=5.22",
     "scipy>=1.13",
+    "pyarrow>=23.0.1",
 ]
 
 [project.scripts]
