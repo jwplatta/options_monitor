@@ -98,8 +98,8 @@ def build_gex_aggregate_chart(
         strike_gex: DataFrame[strike, net_gex]
         price_gex: DataFrame[price, net_gex]
         spot: Current underlying price
-        raw_call_wall: SpotGamma-style call wall (peak raw OI×gamma above spot)
-        raw_put_wall: SpotGamma-style put wall (peak raw OI×gamma below spot)
+        raw_call_wall: SpotGamma-style call wall (peak raw OI x gamma above spot)
+        raw_put_wall: SpotGamma-style put wall (peak raw OI x gamma below spot)
         dw_call_wall: DTE-weighted aggregate call wall
         dw_put_wall: DTE-weighted aggregate put wall
         cluster_call_wall: Per-expiry clustering call wall
@@ -141,13 +141,23 @@ def build_gex_aggregate_chart(
 
     # --- Spot and ZGL ---
     _add_vertical_marker(
-        fig, x=spot, text=f"Spot {spot:.0f}",
-        color="white", line_dash="dash", y_paper=0.92, xanchor="left",
+        fig,
+        x=spot,
+        text=f"Spot {spot:.0f}",
+        color="white",
+        line_dash="dash",
+        y_paper=0.92,
+        xanchor="left",
     )
     if zgl is not None:
         _add_vertical_marker(
-            fig, x=zgl, text=f"ZGL {zgl:.0f}",
-            color="yellow", line_dash="dot", y_paper=0.84, xanchor="right",
+            fig,
+            x=zgl,
+            text=f"ZGL {zgl:.0f}",
+            color="yellow",
+            line_dash="dot",
+            y_paper=0.84,
+            xanchor="right",
         )
     # --- Decision zones (translucent bands, no annotation clutter) ---
     for idx, zone in enumerate(resistance_zones or [], start=1):
@@ -165,7 +175,7 @@ def build_gex_aggregate_chart(
             fig,
             low=float(zone["low"]),
             high=float(zone["high"]),
-            label=f"S{idx} {zone['low']:.0f}–{zone['high']:.0f}",
+            label=f"S{idx} {zone['low']:.0f}-{zone['high']:.0f}",
             color="rgba(220, 0, 0, 0.9)",
             y_paper=0.20 + (idx - 1) * 0.08,
             xanchor="right",
@@ -174,37 +184,67 @@ def build_gex_aggregate_chart(
     # --- Raw (SpotGamma-style) walls — solid, brightest, topmost labels ---
     if raw_call_wall is not None:
         _add_vertical_marker(
-            fig, x=raw_call_wall, text=f"CW {raw_call_wall:.0f}",
-            color="#00ff88", line_dash="solid", y_paper=0.72, xanchor="left",
+            fig,
+            x=raw_call_wall,
+            text=f"CW {raw_call_wall:.0f}",
+            color="#00ff88",
+            line_dash="solid",
+            y_paper=0.72,
+            xanchor="left",
         )
     if raw_put_wall is not None:
         _add_vertical_marker(
-            fig, x=raw_put_wall, text=f"PW {raw_put_wall:.0f}",
-            color="#ff4444", line_dash="solid", y_paper=0.72, xanchor="right",
+            fig,
+            x=raw_put_wall,
+            text=f"PW {raw_put_wall:.0f}",
+            color="#ff4444",
+            line_dash="solid",
+            y_paper=0.72,
+            xanchor="right",
         )
 
     # --- Distance-weighted aggregate walls — dashed, mid-brightness ---
     if dw_call_wall is not None:
         _add_vertical_marker(
-            fig, x=dw_call_wall, text=f"CW-DW {dw_call_wall:.0f}",
-            color="#00cc66", line_dash="dash", y_paper=0.60, xanchor="left",
+            fig,
+            x=dw_call_wall,
+            text=f"CW-DW {dw_call_wall:.0f}",
+            color="#00cc66",
+            line_dash="dash",
+            y_paper=0.60,
+            xanchor="left",
         )
     if dw_put_wall is not None:
         _add_vertical_marker(
-            fig, x=dw_put_wall, text=f"PW-DW {dw_put_wall:.0f}",
-            color="#cc2222", line_dash="dash", y_paper=0.60, xanchor="right",
+            fig,
+            x=dw_put_wall,
+            text=f"PW-DW {dw_put_wall:.0f}",
+            color="#cc2222",
+            line_dash="dash",
+            y_paper=0.60,
+            xanchor="right",
         )
 
     # --- Per-expiry clustering walls — dotted, muted ---
     if cluster_call_wall is not None:
         _add_vertical_marker(
-            fig, x=cluster_call_wall, text=f"CW-CL {cluster_call_wall:.0f}",
-            color="#009944", line_dash="dot", y_paper=0.48, xanchor="left",
+            fig,
+            x=cluster_call_wall,
+            text=f"CW-CL {cluster_call_wall:.0f}",
+            color="#009944",
+            line_dash="dot",
+            y_paper=0.48,
+            xanchor="left",
         )
     if cluster_put_wall is not None:
         _add_vertical_marker(
-            fig, x=cluster_put_wall, text=f"PW-CL {cluster_put_wall:.0f}",
-            color="#991111", line_dash="dot", y_paper=0.48, xanchor="right",
+            fig,
+            x=cluster_put_wall,
+            text=f"PW-CL {cluster_put_wall:.0f}",
+            color="#991111",
+            line_dash="dot",
+            y_paper=0.48,
+            xanchor="right",
         )
 
     fig.update_layout(
