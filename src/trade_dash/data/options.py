@@ -741,6 +741,38 @@ def load_historical_lookback(
     return df
 
 
+@st.cache_data(ttl=1800)
+def load_historical_expiry_lookback(
+    symbol: str,
+    expiry: date,
+    parquet_glob: str,
+    interval_minutes: int,
+) -> pd.DataFrame:
+    """Load downsampled data for a single expiry across multiple parquet files.
+
+    Pulls every snapshot for `expiry` from all parquet files matched by
+    `parquet_glob`, downsampled to `interval_minutes` boundaries.  Useful for
+    vol history, skew evolution, and term-structure replay over a lookback window.
+
+    Example glob: str(PARQUET_OPTIONS_DIR / "*/*/*/SPXW_samples_*.parquet")
+    """
+    expiry_str = expiry.isoformat()
+    query = f"""
+        SELECT * FROM read_parquet('{parquet_glob}')
+        WHERE expiration_date = '{expiry_str}'
+          AND (
+            CAST(strftime('%H', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER) * 60
+            + CAST(strftime('%M', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER)
+          ) % {interval_minutes} = 0
+        ORDER BY sampled_at
+    """
+    df = duckdb.execute(query).df()
+    df = df.astype({col: dtype for col, dtype in _OPTIONS_DTYPES.items() if col in df.columns})
+    df["expiration_date"] = pd.to_datetime(df["expiration_date"])
+    df["contract_type"] = df["contract_type"].str.upper()
+    return df
+
+
 @st.cache_data(ttl=3600)
 def load_options_snapshot(path: Path) -> pd.DataFrame:
     """Load a single options snapshot CSV with typed columns."""

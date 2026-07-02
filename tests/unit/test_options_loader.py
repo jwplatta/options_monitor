@@ -21,6 +21,7 @@ from trade_dash.data.options import (
     list_snapshot_dates,
     list_snapshot_dates_for_expiry,
     load_historical_expiry,
+    load_historical_expiry_lookback,
     load_historical_lookback,
     load_historical_snapshot,
     load_options_snapshot,
@@ -44,6 +45,7 @@ def clear_streamlit_caches() -> None:
     load_historical_snapshot.clear()
     load_historical_expiry.clear()
     load_historical_lookback.clear()
+    load_historical_expiry_lookback.clear()
 
 
 def _create_metadata_db(path: Path, with_table: bool = True) -> Path:
@@ -784,3 +786,28 @@ def test_load_historical_lookback_interval_filtering() -> None:
     ts = pd.to_datetime(df["sampled_at"])
     minutes = ts.dt.hour * 60 + ts.dt.minute
     assert (minutes % 30 == 0).all()
+
+
+def test_load_historical_expiry_lookback_single_expiry_across_dates() -> None:
+    if not _INTEGRATION_PARQUET.exists():
+        pytest.skip("Integration parquet file not present")
+    import duckdb
+
+    expiry_raw = duckdb.execute(
+        "SELECT DISTINCT expiration_date FROM read_parquet(?) ORDER BY expiration_date LIMIT 1",
+        [str(_INTEGRATION_PARQUET)],
+    ).fetchone()
+    assert expiry_raw is not None
+    expiry = date.fromisoformat(str(expiry_raw[0]))
+    glob = str(_INTEGRATION_PARQUET.parent / "*.parquet")
+
+    df = load_historical_expiry_lookback(_INTEGRATION_SYMBOL, expiry, glob, interval_minutes=30)
+    assert not df.empty
+    # All rows must be for the requested expiry
+    assert (df["expiration_date"] == pd.Timestamp(expiry)).all()
+    # Every row's sampled_at minute-of-day should be divisible by 30
+    ts = pd.to_datetime(df["sampled_at"])
+    minutes = ts.dt.hour * 60 + ts.dt.minute
+    assert (minutes % 30 == 0).all()
+    # Sorted by sampled_at
+    assert ts.is_monotonic_increasing
