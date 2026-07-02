@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -11,12 +12,14 @@ import streamlit as st
 
 from trade_dash.calc.fixed_strike_vol import build_iv_matrix
 from trade_dash.calc.iv_zscore import build_bucket_stats, compute_zscore_matrix
-from trade_dash.config import OPTIONS_DIR
+from trade_dash.config import OPTIONS_DIR, PARQUET_OPTIONS_DIR
 from trade_dash.data.options import (
-    find_downsampled_snapshots_for_lookback,
     find_latest_snapshots,
+    load_historical_lookback,
     load_options_snapshot,
 )
+
+_CHICAGO = ZoneInfo("America/Chicago")
 
 
 @st.cache_data(ttl=1800)
@@ -28,23 +31,29 @@ def _load_historical_frames(
 ) -> tuple[list[pd.DataFrame], list[date]]:
     """Load interval-downsampled historical chain snapshots for z-score bucket building.
 
-    Downsampling is performed in SQL. Returns (frames, sample_dates).
+    Queries DuckDB across all parquet files for the lookback window. Returns
+    (frames, sample_dates) where each frame is one sampled_at slice and
+    sample_dates is the corresponding Chicago market date.
     """
-    all_snaps = find_downsampled_snapshots_for_lookback(
-        symbol, lookback_days, interval_minutes, days_out=90, include_0dte=True,
-        data_dir=options_dir,
+    today = date.today()
+    start_expiry = today
+    end_expiry = date(today.year + 1, today.month, today.day)
+    parquet_glob = str(PARQUET_OPTIONS_DIR / "*" / "*" / "*" / f"{symbol}_samples_*.parquet")
+
+    df = load_historical_lookback(
+        symbol, parquet_glob, (start_expiry, end_expiry), interval_minutes
     )
+    if df.empty:
+        return [], []
+
+    df["sampled_at"] = pd.to_datetime(df["sampled_at"], utc=True)
+
     frames: list[pd.DataFrame] = []
     sample_dates: list[date] = []
-
-    for sample_date, expiry_grouped in sorted(all_snaps.items()):
-        for snaps in expiry_grouped.values():
-            for _, path in snaps:
-                try:
-                    frames.append(load_options_snapshot(path))
-                    sample_dates.append(sample_date)
-                except FileNotFoundError:
-                    continue
+    for sampled_at, group in df.groupby("sampled_at", sort=True):
+        chicago_date = pd.Timestamp(str(sampled_at)).astimezone(_CHICAGO).date()
+        frames.append(group.reset_index(drop=True))
+        sample_dates.append(chicago_date)
 
     return frames, sample_dates
 
