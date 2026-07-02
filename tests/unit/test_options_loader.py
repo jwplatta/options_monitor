@@ -12,6 +12,7 @@ import pytest
 from trade_dash.data.options import (
     _parse_filename,
     find_all_snapshots_for_expiry,
+    find_historical_snapshot_times,
     find_latest_snapshots,
     find_snapshots_for_expiry_on_date,
     find_snapshots_for_window_on_date,
@@ -19,7 +20,12 @@ from trade_dash.data.options import (
     list_expirations_for_window_on_date,
     list_snapshot_dates,
     list_snapshot_dates_for_expiry,
+    load_historical_expiry,
+    load_historical_expiry_lookback,
+    load_historical_lookback,
+    load_historical_snapshot,
     load_options_snapshot,
+    parquet_path_for_date,
     select_window_snapshots_at_or_before,
 )
 
@@ -35,6 +41,11 @@ def clear_streamlit_caches() -> None:
     find_snapshots_for_expiry_on_date.clear()
     find_snapshots_for_window_on_date.clear()
     load_options_snapshot.clear()
+    find_historical_snapshot_times.clear()
+    load_historical_snapshot.clear()
+    load_historical_expiry.clear()
+    load_historical_lookback.clear()
+    load_historical_expiry_lookback.clear()
 
 
 def _create_metadata_db(path: Path, with_table: bool = True) -> Path:
@@ -407,12 +418,8 @@ def test_list_snapshot_dates_returns_symbol_wide_distinct_sorted_dates(tmp_path:
 
 def test_list_snapshot_dates_for_expiry_uses_chicago_market_date(tmp_path: Path) -> None:
     db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
-    prev_evening = _write_snapshot_csv(
-        tmp_path / "SPXW_exp2026-06-05_2026-06-03_01-00-43.csv"
-    )
-    market_open = _write_snapshot_csv(
-        tmp_path / "SPXW_exp2026-06-05_2026-06-03_13-30-00.csv"
-    )
+    prev_evening = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-05_2026-06-03_01-00-43.csv")
+    market_open = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-05_2026-06-03_13-30-00.csv")
 
     _insert_metadata_row(
         db_path,
@@ -482,15 +489,9 @@ def test_find_snapshots_for_expiry_on_date_filters_and_orders_rows(tmp_path: Pat
 
 def test_find_snapshots_for_expiry_on_date_uses_chicago_market_date(tmp_path: Path) -> None:
     db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
-    prev_evening = _write_snapshot_csv(
-        tmp_path / "SPXW_exp2026-06-05_2026-06-03_01-00-43.csv"
-    )
-    market_open = _write_snapshot_csv(
-        tmp_path / "SPXW_exp2026-06-05_2026-06-03_13-30-00.csv"
-    )
-    market_midday = _write_snapshot_csv(
-        tmp_path / "SPXW_exp2026-06-05_2026-06-03_18-00-00.csv"
-    )
+    prev_evening = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-05_2026-06-03_01-00-43.csv")
+    market_open = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-05_2026-06-03_13-30-00.csv")
+    market_midday = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-05_2026-06-03_18-00-00.csv")
 
     _insert_metadata_row(
         db_path,
@@ -670,3 +671,143 @@ def test_load_options_snapshot_columns(tmp_path: Path) -> None:
     for column in required:
         assert column in df.columns
     assert df["underlying_price"].iloc[0] == 5300.0
+
+
+# ---------------------------------------------------------------------------
+# Parquet / DuckDB integration tests
+#
+# These tests require a real parquet file on disk produced by tickrake.
+# They are skipped automatically if the file is absent.
+# ---------------------------------------------------------------------------
+
+_INTEGRATION_PARQUET = (
+    Path.home() / ".tickrake/data/options/schwab/2026/06/25/SPXW_samples_2026-06-25.parquet"
+)
+_INTEGRATION_DATE = date(2026, 6, 25)
+_INTEGRATION_SYMBOL = "SPXW"
+
+pytestmark_integration = pytest.mark.skipif(
+    not _INTEGRATION_PARQUET.exists(),
+    reason="Integration parquet file not present on this machine",
+)
+
+
+def test_parquet_path_for_date_known_good() -> None:
+    p = parquet_path_for_date(_INTEGRATION_SYMBOL, _INTEGRATION_DATE)
+    if not _INTEGRATION_PARQUET.exists():
+        pytest.skip("Integration parquet file not present")
+    assert p is not None
+    assert p.exists()
+
+
+def test_parquet_path_for_date_missing_returns_none() -> None:
+    # A future date will not have a parquet file
+    p = parquet_path_for_date(_INTEGRATION_SYMBOL, date(2099, 1, 1))
+    assert p is None
+
+
+def test_find_historical_snapshot_times_returns_sorted_datetimes() -> None:
+    if not _INTEGRATION_PARQUET.exists():
+        pytest.skip("Integration parquet file not present")
+    import duckdb
+
+    expiry_raw = duckdb.execute(
+        "SELECT DISTINCT expiration_date FROM read_parquet(?) LIMIT 1",
+        [str(_INTEGRATION_PARQUET)],
+    ).fetchone()
+    assert expiry_raw is not None
+    expiry = date.fromisoformat(str(expiry_raw[0]))
+
+    times = find_historical_snapshot_times(expiry, _INTEGRATION_PARQUET)
+    assert len(times) > 0
+    assert all(isinstance(t, datetime) for t in times)
+    assert times == sorted(times)
+
+
+def test_load_historical_snapshot_returns_correct_columns() -> None:
+    if not _INTEGRATION_PARQUET.exists():
+        pytest.skip("Integration parquet file not present")
+    import duckdb
+
+    row = duckdb.execute(
+        "SELECT expiration_date, sampled_at FROM read_parquet(?) LIMIT 1",
+        [str(_INTEGRATION_PARQUET)],
+    ).fetchone()
+    assert row is not None
+    expiry = date.fromisoformat(str(row[0]))
+    sampled_at = datetime.fromisoformat(str(row[1]))
+
+    df = load_historical_snapshot(_INTEGRATION_SYMBOL, expiry, sampled_at, _INTEGRATION_PARQUET)
+    assert not df.empty
+    required = ["contract_type", "strike", "gamma", "underlying_price", "expiration_date"]
+    for col in required:
+        assert col in df.columns
+    assert df["contract_type"].str.isupper().all()
+
+
+def test_load_historical_expiry_all_rows_for_expiry() -> None:
+    if not _INTEGRATION_PARQUET.exists():
+        pytest.skip("Integration parquet file not present")
+    import duckdb
+
+    expiry_raw = duckdb.execute(
+        "SELECT DISTINCT expiration_date FROM read_parquet(?) LIMIT 1",
+        [str(_INTEGRATION_PARQUET)],
+    ).fetchone()
+    assert expiry_raw is not None
+    expiry = date.fromisoformat(str(expiry_raw[0]))
+
+    df = load_historical_expiry(
+        _INTEGRATION_SYMBOL, expiry, _INTEGRATION_DATE, _INTEGRATION_PARQUET
+    )
+    assert not df.empty
+    assert (df["expiration_date"] == pd.Timestamp(expiry)).all()
+    # should be sorted by sampled_at
+    assert df["sampled_at"].is_monotonic_increasing
+
+
+def test_load_historical_lookback_interval_filtering() -> None:
+    if not _INTEGRATION_PARQUET.exists():
+        pytest.skip("Integration parquet file not present")
+    import duckdb
+
+    bounds = duckdb.execute(
+        "SELECT MIN(expiration_date), MAX(expiration_date) FROM read_parquet(?)",
+        [str(_INTEGRATION_PARQUET)],
+    ).fetchone()
+    assert bounds is not None
+    start = date.fromisoformat(str(bounds[0]))
+    end = date.fromisoformat(str(bounds[1]))
+    glob = str(_INTEGRATION_PARQUET.parent / "*.parquet")
+
+    df = load_historical_lookback(_INTEGRATION_SYMBOL, glob, (start, end), interval_minutes=30)
+    assert not df.empty
+    # Every row's sampled_at minute-of-day should be divisible by 30
+    ts = pd.to_datetime(df["sampled_at"])
+    minutes = ts.dt.hour * 60 + ts.dt.minute
+    assert (minutes % 30 == 0).all()
+
+
+def test_load_historical_expiry_lookback_single_expiry_across_dates() -> None:
+    if not _INTEGRATION_PARQUET.exists():
+        pytest.skip("Integration parquet file not present")
+    import duckdb
+
+    expiry_raw = duckdb.execute(
+        "SELECT DISTINCT expiration_date FROM read_parquet(?) ORDER BY expiration_date LIMIT 1",
+        [str(_INTEGRATION_PARQUET)],
+    ).fetchone()
+    assert expiry_raw is not None
+    expiry = date.fromisoformat(str(expiry_raw[0]))
+    glob = str(_INTEGRATION_PARQUET.parent / "*.parquet")
+
+    df = load_historical_expiry_lookback(_INTEGRATION_SYMBOL, expiry, glob, interval_minutes=30)
+    assert not df.empty
+    # All rows must be for the requested expiry
+    assert (df["expiration_date"] == pd.Timestamp(expiry)).all()
+    # Every row's sampled_at minute-of-day should be divisible by 30
+    ts = pd.to_datetime(df["sampled_at"])
+    minutes = ts.dt.hour * 60 + ts.dt.minute
+    assert (minutes % 30 == 0).all()
+    # Sorted by sampled_at
+    assert ts.is_monotonic_increasing
