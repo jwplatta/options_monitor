@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import duckdb
 import pandas as pd
 import streamlit as st
 
-from trade_dash.config import OPTIONS_DIR, TICKRAKE_DB_PATH
+from trade_dash.config import OPTIONS_DIR, PARQUET_OPTIONS_DIR, TICKRAKE_DB_PATH
 
 _OPTIONS_DTYPES: dict[str, Any] = {
     "strike": "float64",
@@ -312,8 +313,14 @@ def find_downsampled_snapshots_for_lookback(
         WHERE row_num = 1
         ORDER BY sample_date ASC, expiration_date ASC, last_observed_at ASC
         """,
-        (interval_minutes, _OPTIONS_DATASET_TYPE, _OPTIONS_PROVIDER, symbol,
-         lookback_start.isoformat(), today.isoformat()),
+        (
+            interval_minutes,
+            _OPTIONS_DATASET_TYPE,
+            _OPTIONS_PROVIDER,
+            symbol,
+            lookback_start.isoformat(),
+            today.isoformat(),
+        ),
         metadata_db_path,
     )
 
@@ -475,9 +482,7 @@ def find_latest_snapshots(
         ),
         metadata_db_path,
     )
-    return {
-        date.fromisoformat(str(row["expiration_date"])): Path(str(row["path"])) for row in rows
-    }
+    return {date.fromisoformat(str(row["expiration_date"])): Path(str(row["path"])) for row in rows}
 
 
 @st.cache_data(ttl=30)
@@ -626,6 +631,114 @@ def select_window_snapshots_at_or_before(
         if chosen_path is not None:
             selected[expiry] = chosen_path
     return selected
+
+
+# ---------------------------------------------------------------------------
+# Parquet / DuckDB access — historical dates only (sample_date < today)
+# ---------------------------------------------------------------------------
+
+
+def parquet_path_for_date(symbol: str, sample_date: date) -> Path | None:
+    """Return the parquet file path for a symbol and date, or None if not present.
+
+    Returns None for today (live CSV path), weekends, or dates before compaction ran.
+    """
+    p = (
+        PARQUET_OPTIONS_DIR
+        / f"{sample_date.year:04d}"
+        / f"{sample_date.month:02d}"
+        / f"{sample_date.day:02d}"
+        / f"{symbol}_samples_{sample_date.isoformat()}.parquet"
+    )
+    return p if p.exists() else None
+
+
+@st.cache_data(ttl=300)
+def find_historical_snapshot_times(expiry: date, parquet_path: Path) -> list[datetime]:
+    """Return sorted distinct sampled_at datetimes for an expiry from a parquet file.
+
+    Replaces find_snapshots_for_expiry_on_date() for historical dates — returns
+    datetimes only (no per-file paths needed).
+    """
+    expiry_str = expiry.isoformat()
+    result = duckdb.execute(
+        "SELECT DISTINCT sampled_at FROM read_parquet(?)"
+        " WHERE expiration_date = ? ORDER BY sampled_at",
+        [str(parquet_path), expiry_str],
+    ).fetchall()
+    return [datetime.fromisoformat(str(row[0])) for row in result]
+
+
+@st.cache_data(ttl=3600)
+def load_historical_snapshot(
+    symbol: str, expiry: date, sampled_at: datetime, parquet_path: Path
+) -> pd.DataFrame:
+    """Load a single snapshot for one expiry and sampled_at from a parquet file.
+
+    Equivalent to load_options_snapshot() for historical dates.
+    """
+    expiry_str = expiry.isoformat()
+    sampled_at_str = sampled_at.isoformat()
+    df = duckdb.execute(
+        "SELECT * FROM read_parquet(?)"
+        " WHERE expiration_date = ?"
+        " AND CAST(sampled_at AS TIMESTAMPTZ) = CAST(? AS TIMESTAMPTZ)",
+        [str(parquet_path), expiry_str, sampled_at_str],
+    ).df()
+    df = df.astype({col: dtype for col, dtype in _OPTIONS_DTYPES.items() if col in df.columns})
+    df["expiration_date"] = pd.to_datetime(df["expiration_date"])
+    df["contract_type"] = df["contract_type"].str.upper()
+    return df
+
+
+@st.cache_data(ttl=3600)
+def load_historical_expiry(
+    symbol: str, expiry: date, sample_date: date, parquet_path: Path
+) -> pd.DataFrame:
+    """Load all snapshots for one expiry on one historical date from a parquet file.
+
+    Returns a single DataFrame sorted by sampled_at. Caller can split on
+    sampled_at in memory for per-snapshot iteration.
+    """
+    expiry_str = expiry.isoformat()
+    df = duckdb.execute(
+        "SELECT * FROM read_parquet(?) WHERE expiration_date = ? ORDER BY sampled_at",
+        [str(parquet_path), expiry_str],
+    ).df()
+    df = df.astype({col: dtype for col, dtype in _OPTIONS_DTYPES.items() if col in df.columns})
+    df["expiration_date"] = pd.to_datetime(df["expiration_date"])
+    df["contract_type"] = df["contract_type"].str.upper()
+    return df
+
+
+@st.cache_data(ttl=1800)
+def load_historical_lookback(
+    symbol: str,
+    parquet_glob: str,
+    expiry_range: tuple[date, date],
+    interval_minutes: int,
+) -> pd.DataFrame:
+    """Load downsampled historical data across multiple parquet files via DuckDB glob.
+
+    Filters to expiry_range and downsamples to rows where sampled_at falls on an
+    interval_minutes boundary (minute-of-day % interval_minutes == 0).
+    """
+    start_str = expiry_range[0].isoformat()
+    end_str = expiry_range[1].isoformat()
+    query = f"""
+        SELECT * FROM read_parquet('{parquet_glob}')
+        WHERE expiration_date BETWEEN '{start_str}' AND '{end_str}'
+          AND (
+            CAST(strftime('%H', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER) * 60
+            + CAST(strftime('%M', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER)
+          ) % {interval_minutes} = 0
+        ORDER BY sampled_at, expiration_date
+    """
+    df = duckdb.execute(query).df()
+    df = df.astype({col: dtype for col, dtype in _OPTIONS_DTYPES.items() if col in df.columns})
+    df["expiration_date"] = pd.to_datetime(df["expiration_date"])
+    df["contract_type"] = df["contract_type"].str.upper()
+    return df
 
 
 @st.cache_data(ttl=3600)

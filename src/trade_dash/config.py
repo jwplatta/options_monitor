@@ -16,9 +16,10 @@ CANDLE_DIR: Path = Path(
     os.getenv("TRADE_DASH_CANDLE_DIR", str(_TICKRAKE / "history" / "ibkr-paper"))
 )
 OPTIONS_DIR: Path = Path(os.getenv("TRADE_DASH_OPTIONS_DIR", str(_TICKRAKE / "options" / "schwab")))
-TICKRAKE_DB_PATH: Path = Path(
-    os.getenv("TRADE_DASH_TICKRAKE_DB_PATH", str(_TICKRAKE_DB))
-)
+TICKRAKE_DB_PATH: Path = Path(os.getenv("TRADE_DASH_TICKRAKE_DB_PATH", str(_TICKRAKE_DB)))
 SCHWAB_CANDLE_DIR: Path = Path(
     os.getenv("TRADE_DASH_SCHWAB_CANDLE_DIR", str(_TICKRAKE / "history" / "schwab"))
+)
+PARQUET_OPTIONS_DIR: Path = Path(
+    os.getenv("TRADE_DASH_PARQUET_OPTIONS_DIR", str(_TICKRAKE / "options" / "schwab"))
 )
