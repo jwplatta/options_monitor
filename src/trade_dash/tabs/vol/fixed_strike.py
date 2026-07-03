@@ -128,7 +128,13 @@ def render_fixed_strike_tab(options_dir: Path = OPTIONS_DIR) -> None:
             contract_type=fsv_contract_type,
             today=date.today(),
         )
-    _render_fsv_table(iv_matrix, spot=spot, otm_pct=fsv_otm_pct, zscore_matrix=zscore_matrix)
+    _render_fsv_table(
+        iv_matrix,
+        spot=spot,
+        otm_pct=fsv_otm_pct,
+        zscore_matrix=zscore_matrix,
+        zscore_sample_days=len(set(hist_dates)),
+    )
 
 
 def _render_fsv_table(
@@ -136,6 +142,7 @@ def _render_fsv_table(
     spot: float,
     otm_pct: float,
     zscore_matrix: pd.DataFrame | None = None,
+    zscore_sample_days: int = 0,
 ) -> None:
     """Render the fixed-strike IV matrix as a scrollable styled dataframe."""
     strikes = np.array(iv_matrix.columns.tolist(), dtype=float)
@@ -223,6 +230,8 @@ def _render_fsv_table(
     n_rows = len(iv_filtered)
     table_height = 38 + n_rows * 28
     st.dataframe(styled, use_container_width=True, height=table_height)
+    if zscore_sample_days:
+        st.caption(f"z-scores computed from n={zscore_sample_days} sample days")
 
 
 def _render_zscore_legend() -> None:
