@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from trade_dash import app
-from trade_dash.tabs import gamma_map, history
+from trade_dash.tabs import gex as gamma_map, history
 
 
 def test_dashboard_router_only_invokes_selected_panel(monkeypatch) -> None:
@@ -327,83 +327,6 @@ def test_history_view_warns_when_selected_date_has_no_snapshots(
 
     assert warnings
 
-
-def test_gex_history_view_uses_at_or_before_snapshot_selection(monkeypatch, tmp_path: Path) -> None:
-    sample_df = pd.DataFrame(
-        [{"underlying_price": 5000.0, "strike": 5000.0, "gamma": 0.01, "open_interest": 100.0}]
-    )
-    first = tmp_path / "first.csv"
-    second = tmp_path / "second.csv"
-    selected_paths: dict[date, Path] = {
-        date(2026, 4, 15): first,
-        date(2026, 4, 16): second,
-    }
-    price_calls: list[pd.Timestamp | None] = []
-    chart_calls: list[str] = []
-
-    monkeypatch.setattr(
-        gamma_map,
-        "list_snapshot_dates",
-        lambda symbol, data_dir: [date(2026, 4, 15)],
-    )
-    monkeypatch.setattr(
-        gamma_map,
-        "list_expirations_for_window_on_date",
-        lambda symbol, sample_date, days_out, include_0dte, data_dir: [
-            date(2026, 4, 15),
-            date(2026, 4, 16),
-        ],
-    )
-    monkeypatch.setattr(
-        gamma_map,
-        "find_snapshots_for_window_on_date",
-        lambda symbol, sample_date, expiries, data_dir: {
-            date(2026, 4, 15): [(pd.Timestamp("2026-04-15T14:00:00+00:00").to_pydatetime(), first)],
-            date(2026, 4, 16): [
-                (pd.Timestamp("2026-04-15T14:01:00+00:00").to_pydatetime(), second)
-            ],
-        },
-    )
-    monkeypatch.setattr(
-        gamma_map,
-        "select_window_snapshots_at_or_before",
-        lambda grouped_snapshots, replay_time: selected_paths,
-    )
-    monkeypatch.setattr(gamma_map, "load_options_snapshot", lambda path: sample_df)
-    monkeypatch.setattr(gamma_map, "net_gex_by_strike", lambda df, spot, strike_range: sample_df)
-    monkeypatch.setattr(
-        gamma_map,
-        "net_gex_by_price",
-        lambda df, spot, snap_time, price_range: price_calls.append(snap_time) or sample_df,
-    )
-    monkeypatch.setattr(
-        gamma_map,
-        "build_gex_aggregate_chart",
-        lambda strike_gex, price_gex, spot, title: chart_calls.append(title) or object(),
-    )
-    monkeypatch.setattr(gamma_map.st, "columns", lambda spec: (nullcontext(), nullcontext()))
-    monkeypatch.setattr(gamma_map.st, "date_input", lambda *args, **kwargs: date(2026, 4, 15))
-    monkeypatch.setattr(gamma_map.st, "radio", lambda *args, **kwargs: 5)
-    monkeypatch.setattr(
-        gamma_map.st,
-        "select_slider",
-        lambda *args, **kwargs: kwargs["options"][-1],
-    )
-    monkeypatch.setattr(gamma_map.st, "spinner", lambda *args, **kwargs: nullcontext())
-    monkeypatch.setattr(gamma_map.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gamma_map.st, "plotly_chart", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gamma_map.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gamma_map.st, "session_state", {})
-
-    gamma_map._render_gex_history_view(
-        symbol="SPXW",
-        include_0dte=True,
-        range_pct=5.0,
-        options_dir=tmp_path,
-    )
-
-    assert price_calls == [pd.Timestamp("2026-04-15 14:01:00")]
-    assert chart_calls
 
 
 def test_render_gamma_map_tab_limits_symbol_options(monkeypatch, tmp_path: Path) -> None:
