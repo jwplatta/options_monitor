@@ -20,7 +20,9 @@ from trade_dash.data.options import (
     find_snapshots_for_expiry_on_date,
     list_expirations,
     list_snapshot_dates,
+    load_historical_expiry,
     load_options_snapshot,
+    parquet_path_for_date,
 )
 
 _SYMBOL = "SPXW"
@@ -42,6 +44,22 @@ def _get_spot(snapshots: list[tuple[datetime, Path]]) -> float | None:
     return float(spot_series.iloc[0]) if not spot_series.empty else None
 
 
+def _load_parquet_preloaded(symbol: str, expiry: date, sample_date: date) -> pd.DataFrame:
+    """Load historical expiry data from parquet and set _ts as UTC datetime.
+
+    Raises FileNotFoundError if no parquet file exists for the given date.
+    """
+    parquet_path = parquet_path_for_date(symbol, sample_date)
+    if parquet_path is None:
+        raise FileNotFoundError(
+            f"No parquet file for {symbol} on {sample_date}. "
+            "Compaction may not have run for this date."
+        )
+    df = load_historical_expiry(symbol, expiry, sample_date, parquet_path)
+    df["_ts"] = pd.to_datetime(df["sampled_at"], utc=True)
+    return df
+
+
 def _load_tape(
     snapshots: list[tuple[datetime, Path]],
     spot: float,
@@ -51,6 +69,7 @@ def _load_tape(
     contract_filter: str,
     selected_exp: date,
     ema_span: int,
+    preloaded: pd.DataFrame | None = None,
 ) -> tuple[list[datetime], list[float], list[float], list[float], list[float]]:
     """Compute (or retrieve from cache) flow tape data for the given parameters."""
     tape_key = (
@@ -61,7 +80,7 @@ def _load_tape(
         mode,
         contract_filter,
         ema_span,
-        len(snapshots),
+        len(snapshots) if preloaded is None else len(preloaded),
     )
     if st.session_state.get("_fl_tape_key") != tape_key:
         with st.spinner("Computing flow tape..."):
@@ -73,6 +92,7 @@ def _load_tape(
                 mode=mode,
                 contract_filter=contract_filter,
                 ema_span=ema_span,
+                preloaded=preloaded,
             )
         st.session_state["_fl_tape_key"] = tape_key
         st.session_state["_fl_tape_timestamps"] = timestamps
@@ -97,14 +117,29 @@ def _render_flow_tape_view(
     contract_filter: str,
     selected_exp: date,
     ema_span: int,
+    preloaded: pd.DataFrame | None = None,
 ) -> None:
     timestamps, new_call, new_put, raw_call, raw_put = _load_tape(
-        snapshots, spot, sample_date, lookback_window, "lookback",
-        contract_filter, selected_exp, ema_span,
+        snapshots,
+        spot,
+        sample_date,
+        lookback_window,
+        "lookback",
+        contract_filter,
+        selected_exp,
+        ema_span,
+        preloaded,
     )
     _, cum_call, cum_put, _, _ = _load_tape(
-        snapshots, spot, sample_date, lookback_window, "cumulative",
-        contract_filter, selected_exp, ema_span,
+        snapshots,
+        spot,
+        sample_date,
+        lookback_window,
+        "cumulative",
+        contract_filter,
+        selected_exp,
+        ema_span,
+        preloaded,
     )
     if not timestamps:
         st.warning("No flow data for selected date/expiry.")
@@ -129,17 +164,24 @@ def _render_flow_profile_view(
     selected_exp: date,
     spot: float,
     range_pct: float,
+    preloaded: pd.DataFrame | None = None,
 ) -> None:
     # Build ordered list of session snapshot timestamps for the rewind slider.
-    session_snapshots = sorted(
-        [(ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date],
-        key=lambda x: x[0],
-    )
-    if not session_snapshots:
+    if preloaded is not None:
+        session_ts = sorted(preloaded["_ts"].dropna().unique().tolist())
+    else:
+        session_snapshots = sorted(
+            [(ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date],
+            key=lambda x: x[0],
+        )
+        if not session_snapshots:
+            st.warning("No flow data for selected date/expiry.")
+            return
+        session_ts = [ts for ts, _ in session_snapshots]
+
+    if not session_ts:
         st.warning("No flow data for selected date/expiry.")
         return
-
-    session_ts = [ts for ts, _ in session_snapshots]
     session_ts_ct = [_to_chicago(ts) for ts in session_ts]
     ts_labels = [t.strftime("%H:%M") for t in session_ts_ct]
 
@@ -170,6 +212,7 @@ def _render_flow_profile_view(
                 lookback_window=lookback_window,
                 contract_filter=contract_filter,
                 as_of=as_of_ts,
+                preloaded=preloaded,
             )
         st.session_state["_fl_profile_key"] = profile_key
         st.session_state["_fl_profile_strikes"] = strikes
@@ -219,12 +262,16 @@ def _render_intraday_flow_view(
     spot: float,
     range_pct: float,
     options_dir: Path,
+    preloaded: pd.DataFrame | None = None,
 ) -> None:
-    all_expiry_snapshots = find_all_snapshots_for_expiry(
-        symbol,
-        expiry=selected_exp,
-        data_dir=options_dir,
-    )
+    if preloaded is not None:
+        all_expiry_snapshots: list[tuple[datetime, Path]] = []
+    else:
+        all_expiry_snapshots = find_all_snapshots_for_expiry(
+            symbol,
+            expiry=selected_exp,
+            data_dir=options_dir,
+        )
 
     col_ct, col_wt = st.columns([3, 1])
     with col_ct:
@@ -256,7 +303,7 @@ def _render_intraday_flow_view(
         bucket_minutes,
         weight_by_delta,
         sample_date,
-        len(all_expiry_snapshots),
+        len(all_expiry_snapshots) if preloaded is None else len(preloaded),
     )
     with st.spinner("Computing intraday flow..."):
         if st.session_state.get("_fl_intraday_key") != flow_key:
@@ -268,6 +315,7 @@ def _render_intraday_flow_view(
                 bucket_minutes=bucket_minutes,
                 weight_by_delta=weight_by_delta,
                 target_date=sample_date,
+                preloaded=preloaded,
             )
             st.session_state["_fl_intraday_key"] = flow_key
             st.session_state["_fl_intraday_strikes"] = flow_strikes
@@ -367,24 +415,42 @@ def render_flow_tab(options_dir: Path) -> None:
 
     contract_filter = _CONTRACT_MAP[contract_label]
 
-    # Load snapshots for the selected expiry on the selected date.
-    snapshots = find_snapshots_for_expiry_on_date(
-        _SYMBOL,
-        expiry=selected_exp,
-        sample_date=sample_date,
-        data_dir=options_dir,
-    )
+    # Route: historical dates use parquet, today uses SQLite + CSV.
+    preloaded: pd.DataFrame | None = None
+    snapshots: list[tuple[datetime, Path]] = []
+    spot: float = 0.0
 
-    if not snapshots:
-        with col_chart:
-            st.warning(f"No snapshots found for {_SYMBOL} expiry {selected_exp} on {sample_date}.")
-        return
-
-    spot = _get_spot(snapshots)
-    if spot is None:
-        with col_chart:
-            st.warning("Could not determine spot price from snapshots.")
-        return
+    if sample_date < date.today():
+        try:
+            preloaded = _load_parquet_preloaded(_SYMBOL, selected_exp, sample_date)
+        except FileNotFoundError as e:
+            with col_chart:
+                st.error(str(e))
+            return
+        spot_series = pd.to_numeric(preloaded["underlying_price"], errors="coerce").dropna()
+        if spot_series.empty:
+            with col_chart:
+                st.warning("Could not determine spot price from parquet data.")
+            return
+        spot = float(spot_series.iloc[-1])
+    else:
+        snapshots = find_snapshots_for_expiry_on_date(
+            _SYMBOL,
+            expiry=selected_exp,
+            sample_date=sample_date,
+            data_dir=options_dir,
+        )
+        if not snapshots:
+            with col_chart:
+                st.warning(
+                    f"No snapshots found for {_SYMBOL} expiry {selected_exp} on {sample_date}."
+                )
+            return
+        spot = _get_spot(snapshots) or 0.0
+        if spot == 0.0:
+            with col_chart:
+                st.warning("Could not determine spot price from snapshots.")
+            return
 
     with col_chart:
         active_view = str(
@@ -407,6 +473,7 @@ def render_flow_tab(options_dir: Path) -> None:
                 contract_filter=contract_filter,
                 selected_exp=selected_exp,
                 ema_span=ema_span,
+                preloaded=preloaded,
             )
         elif active_view == "Flow Profile":
             _render_flow_profile_view(
@@ -417,6 +484,7 @@ def render_flow_tab(options_dir: Path) -> None:
                 selected_exp=selected_exp,
                 spot=spot,
                 range_pct=range_pct,
+                preloaded=preloaded,
             )
         else:
             _render_intraday_flow_view(
@@ -426,4 +494,5 @@ def render_flow_tab(options_dir: Path) -> None:
                 spot=spot,
                 range_pct=range_pct,
                 options_dir=options_dir,
+                preloaded=preloaded,
             )

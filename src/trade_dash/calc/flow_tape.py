@@ -25,25 +25,30 @@ def _load_session(
     spot: float,
     contract_filter: str,
     itm_strike_limit: int,
+    preloaded: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Load, clean, and filter all session snapshots into a single DataFrame.
 
     Returns an empty DataFrame if no usable data is found.
+    If preloaded is provided, it is used directly (already has _ts set from sampled_at).
     """
-    session = sorted(
-        ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date),
-        key=lambda x: x[0],
-    )
-    if not session:
-        return pd.DataFrame()
+    if preloaded is not None:
+        combined = preloaded.copy()
+    else:
+        session = sorted(
+            ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date),
+            key=lambda x: x[0],
+        )
+        if not session:
+            return pd.DataFrame()
 
-    frames: list[pd.DataFrame] = []
-    for ts, path in session:
-        df = load_options_snapshot(path).copy()
-        df["_ts"] = ts
-        frames.append(df)
+        frames: list[pd.DataFrame] = []
+        for ts, path in session:
+            df = load_options_snapshot(path).copy()
+            df["_ts"] = ts
+            frames.append(df)
 
-    combined = pd.concat(frames, ignore_index=True)
+        combined = pd.concat(frames, ignore_index=True)
 
     for col in ["bid", "ask", "last", "total_volume", "delta", "strike"]:
         combined[col] = pd.to_numeric(combined[col], errors="coerce")
@@ -212,6 +217,7 @@ def compute_flow_tape(
     contract_filter: str = "BOTH",
     itm_strike_limit: int = 25,
     ema_span: int = 20,
+    preloaded: pd.DataFrame | None = None,
 ) -> tuple[list[datetime], list[float], list[float], list[float], list[float]]:
     """Compute call and put flow series for a single trading session.
 
@@ -220,13 +226,16 @@ def compute_flow_tape(
     cum_call/cum_put: smoothed/cumulative flow for the trend line.
     raw_call/raw_put: per-snapshot flow for the oscillator bars.
     mode: "lookback" (new flow) or "cumulative" (flow since open).
+    preloaded: if provided, used instead of loading from snapshot paths (historical parquet path).
     """
     if mode not in ("lookback", "cumulative"):
         raise ValueError(f"mode must be 'lookback' or 'cumulative', got {mode!r}")
-    if not snapshots:
+    if not snapshots and preloaded is None:
         return [], [], [], [], []
 
-    combined = _load_session(snapshots, sample_date, spot, contract_filter, itm_strike_limit)
+    combined = _load_session(
+        snapshots, sample_date, spot, contract_filter, itm_strike_limit, preloaded
+    )
     if combined.empty:
         return [], [], [], [], []
 
