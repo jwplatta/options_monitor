@@ -15,7 +15,7 @@ from trade_dash.calc.iv_zscore import build_bucket_stats, compute_zscore_matrix
 from trade_dash.config import OPTIONS_DIR, PARQUET_OPTIONS_DIR
 from trade_dash.data.options import (
     find_latest_snapshots,
-    load_historical_lookback,
+    load_historical_sample_window,
     load_options_snapshot,
 )
 
@@ -37,19 +37,13 @@ def _load_historical_frames(
     """
     today = date.today()
     lookback_start = today - timedelta(days=lookback_days)
-    # expiry_range covers all contracts that could appear in a lookback window
-    expiry_range = (today, date(today.year + 1, today.month, today.day))
     parquet_glob = str(PARQUET_OPTIONS_DIR / "*" / "*" / "*" / f"{symbol}_samples_*.parquet")
 
-    df = load_historical_lookback(symbol, parquet_glob, expiry_range, interval_minutes)
+    df = load_historical_sample_window(symbol, parquet_glob, lookback_start, interval_minutes)
     if df.empty:
         return [], []
 
     df["sampled_at"] = pd.to_datetime(df["sampled_at"], utc=True)
-    lookback_start_ts = pd.Timestamp(lookback_start, tz="UTC")
-    df = df[df["sampled_at"] >= lookback_start_ts]
-    if df.empty:
-        return [], []
 
     frames: list[pd.DataFrame] = []
     sample_dates: list[date] = []

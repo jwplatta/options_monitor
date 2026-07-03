@@ -742,6 +742,37 @@ def load_historical_lookback(
 
 
 @st.cache_data(ttl=1800)
+def load_historical_sample_window(
+    symbol: str,
+    parquet_glob: str,
+    sample_start: date,
+    interval_minutes: int,
+) -> pd.DataFrame:
+    """Load downsampled historical data across parquet files filtered by sample date.
+
+    Unlike load_historical_lookback (which filters by expiration_date), this filters
+    by sampled_at >= sample_start — the date the snapshot was taken. Intended for
+    z-score history where we want all contracts sampled within a lookback window,
+    including past-expiry contracts.
+    """
+    start_str = sample_start.isoformat()
+    query = f"""
+        SELECT * FROM read_parquet('{parquet_glob}')
+        WHERE CAST(sampled_at AS TIMESTAMPTZ) >= TIMESTAMPTZ '{start_str}'
+          AND (
+            CAST(strftime('%H', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER) * 60
+            + CAST(strftime('%M', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER)
+          ) % {interval_minutes} = 0
+        ORDER BY sampled_at, expiration_date
+    """
+    df = duckdb.execute(query).df()
+    df = df.astype({col: dtype for col, dtype in _OPTIONS_DTYPES.items() if col in df.columns})
+    df["expiration_date"] = pd.to_datetime(df["expiration_date"])
+    df["contract_type"] = df["contract_type"].str.upper()
+    return df
+
+
+@st.cache_data(ttl=1800)
 def load_historical_expiry_lookback(
     symbol: str,
     expiry: date,
