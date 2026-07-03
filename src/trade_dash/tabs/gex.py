@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,15 +24,15 @@ from trade_dash.charts.gex_term_structure import build_gex_term_structure_chart
 from trade_dash.charts.skew_indicators import build_skew_indicators
 from trade_dash.charts.vol_skew import build_vol_skew_chart
 from trade_dash.data.options import (
+    find_historical_snapshot_times,
     find_latest_snapshots,
-    find_snapshots_for_expiry_on_date,
-    find_snapshots_for_window_on_date,
     list_expirations,
     list_expirations_for_window_on_date,
     list_snapshot_dates,
     list_snapshot_dates_for_expiry,
+    load_historical_snapshot,
     load_options_snapshot,
-    select_window_snapshots_at_or_before,
+    parquet_path_for_date,
 )
 
 _CHICAGO = ZoneInfo("America/Chicago")
@@ -252,6 +252,14 @@ def _render_gex_history_view(
         )
         return
 
+    parquet_path = parquet_path_for_date(symbol, selected_sample_date)
+    if parquet_path is None:
+        st.error(
+            f"No parquet file for {symbol} on {selected_sample_date.isoformat()}. "
+            "Compaction may not have run for this date."
+        )
+        return
+
     history_key = (
         symbol,
         selected_sample_date.isoformat(),
@@ -260,18 +268,16 @@ def _render_gex_history_view(
     )
     with st.spinner("Loading historical aggregate snapshots..."):
         if st.session_state.get("_gex_agg_history_key") != history_key:
-            grouped_snapshots = find_snapshots_for_window_on_date(
-                symbol,
-                sample_date=selected_sample_date,
-                expiries=tuple(expiries),
-                data_dir=options_dir,
-            )
+            # Collect distinct snapshot times across all expiries in the window.
+            all_times: set[datetime] = set()
+            for expiry in expiries:
+                all_times.update(find_historical_snapshot_times(expiry, parquet_path))
+            replay_times = sorted(all_times)
             st.session_state["_gex_agg_history_key"] = history_key
-            st.session_state["_gex_agg_history_grouped_snapshots"] = grouped_snapshots
+            st.session_state["_gex_agg_history_replay_times"] = replay_times
         else:
-            grouped_snapshots = st.session_state["_gex_agg_history_grouped_snapshots"]
+            replay_times = st.session_state["_gex_agg_history_replay_times"]
 
-    replay_times = sorted({ts for snapshots in grouped_snapshots.values() for ts, _ in snapshots})
     if not replay_times:
         st.warning(
             f"No historical {symbol} snapshots found for the selected aggregate window on "
@@ -303,18 +309,18 @@ def _render_gex_history_view(
     replay_idx = local_replay_times.index(selected_ts_local)
     replay_time = replay_times[replay_idx]
 
-    selected_paths = select_window_snapshots_at_or_before(grouped_snapshots, replay_time)
-    if not selected_paths:
+    frames = [
+        load_historical_snapshot(symbol, expiry, replay_time, parquet_path) for expiry in expiries
+    ]
+    frames = [f for f in frames if not f.empty]
+    if not frames:
         st.warning(
-            f"No {symbol} expiry snapshots were available at or before "
+            f"No {symbol} expiry snapshots were available at "
             f"{selected_ts_local.strftime('%Y-%m-%d %H:%M:%S CT')}."
         )
         return
 
-    all_opts = pd.concat(
-        [load_options_snapshot(path) for _, path in sorted(selected_paths.items())],
-        ignore_index=True,
-    )
+    all_opts = pd.concat(frames, ignore_index=True)
     spot, strike_range = _compute_spot_and_strike_range(all_opts, range_pct)
     strike_gex = net_gex_by_strike(all_opts, spot=spot, strike_range=strike_range)
     snap_time = pd.Timestamp(replay_time)
@@ -330,7 +336,7 @@ def _render_gex_history_view(
 
     st.caption(
         f"Snapshot time: {selected_ts_local.strftime('%Y-%m-%d %H:%M:%S CT')} | "
-        f"Expiries: {len(selected_paths)}"
+        f"Expiries: {len(frames)}"
     )
     fig_agg = build_gex_aggregate_chart(
         strike_gex,
@@ -444,6 +450,14 @@ def _render_history_view(
         )
         return
 
+    parquet_path = parquet_path_for_date(symbol, selected_sample_date)
+    if parquet_path is None:
+        st.error(
+            f"No parquet file for {symbol} on {selected_sample_date.isoformat()}. "
+            "Compaction may not have run for this date."
+        )
+        return
+
     history_key = (
         symbol,
         selected_exp.isoformat(),
@@ -452,31 +466,26 @@ def _render_history_view(
     )
     with st.spinner("Loading historical chain snapshots..."):
         if st.session_state.get("_gex_history_key") != history_key:
-            snapshots = find_snapshots_for_expiry_on_date(
-                symbol,
-                expiry=selected_exp,
-                sample_date=selected_sample_date,
-                data_dir=options_dir,
-            )
+            snapshot_times = find_historical_snapshot_times(selected_exp, parquet_path)
             st.session_state["_gex_history_key"] = history_key
-            st.session_state["_gex_history_snapshots"] = snapshots
+            st.session_state["_gex_history_snapshot_times"] = snapshot_times
         else:
-            snapshots = st.session_state["_gex_history_snapshots"]
+            snapshot_times = st.session_state["_gex_history_snapshot_times"]
 
-    if not snapshots:
+    if not snapshot_times:
         st.warning(
             f"No {symbol} snapshots found on {selected_sample_date.isoformat()} for "
             f"{selected_exp.isoformat()}."
         )
         return
 
-    local_timestamps = [_to_chicago_time(ts) for ts, _ in snapshots]
+    local_timestamps = [_to_chicago_time(ts) for ts in snapshot_times]
     if st.session_state.get("_gex_history_slider_key") != history_key:
         st.session_state["_gex_history_slider_key"] = history_key
         st.session_state["gm_history_snapshot_time"] = local_timestamps[-1]
 
-    snapshot_idx = len(snapshots) - 1
-    if len(snapshots) > 1:
+    snapshot_idx = len(snapshot_times) - 1
+    if len(snapshot_times) > 1:
         if st.session_state.get("gm_history_snapshot_time") not in local_timestamps:
             st.session_state["gm_history_snapshot_time"] = local_timestamps[-1]
         selected_ts_local = st.select_slider(
@@ -487,11 +496,11 @@ def _render_history_view(
         )
         snapshot_idx = local_timestamps.index(selected_ts_local)
 
-    selected_ts, selected_path = snapshots[snapshot_idx]
+    selected_ts = snapshot_times[snapshot_idx]
     selected_ts_local = local_timestamps[snapshot_idx]
     st.caption(f"Snapshot time: {selected_ts_local.strftime('%Y-%m-%d %H:%M:%S CT')}")
 
-    single_opts = load_options_snapshot(selected_path)
+    single_opts = load_historical_snapshot(symbol, selected_exp, selected_ts, parquet_path)
     spot, strike_range = _compute_spot_and_strike_range(single_opts, range_pct)
     fig_single = build_gex_single_expiry_chart(
         single_opts,
