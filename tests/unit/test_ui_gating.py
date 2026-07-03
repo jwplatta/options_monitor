@@ -14,18 +14,19 @@ from trade_dash.tabs import gex as gamma_map, history
 def test_dashboard_router_only_invokes_selected_panel(monkeypatch) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr(app, "render_regime_tab", lambda candle_dir: calls.append("regime"))
+    monkeypatch.setattr(app, "render_underlying_tab", lambda candle_dir: calls.append("underlying"))
     monkeypatch.setattr(app, "render_vol_tab", lambda candle_dir: calls.append("vol"))
     monkeypatch.setattr(
         app,
-        "render_gamma_map_tab",
-        lambda options_dir, candle_dir: calls.append("gamma"),
+        "render_gex_tab",
+        lambda options_dir, candle_dir: calls.append("gex"),
     )
     monkeypatch.setattr(
         app,
         "render_history_tab",
         lambda options_dir, candle_dir: calls.append("history"),
     )
+    monkeypatch.setattr(app, "render_flow_tab", lambda options_dir: calls.append("flow"))
 
     app._render_active_dashboard_tab("Vol")
     assert calls == ["vol"]
@@ -59,22 +60,12 @@ def test_gamma_router_only_invokes_selected_view(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         gamma_map,
-        "_render_intraday_view",
-        lambda symbol, selected_exp, range_pct, options_dir: calls.append("intraday"),
-    )
-    monkeypatch.setattr(
-        gamma_map,
         "_render_gamma_heatmap_view",
         lambda symbol, today, include_0dte, range_pct, options_dir: calls.append("heatmap"),
     )
-    monkeypatch.setattr(
-        gamma_map,
-        "_render_maker_taker_view",
-        lambda symbol, selected_exp, range_pct, options_dir: calls.append("maker_taker"),
-    )
 
-    gamma_map._render_active_gamma_view(
-        active_view="Intraday",
+    gamma_map._render_active_gex_view(
+        active_view="GEX",
         symbol="SPXW",
         today=date(2026, 4, 15),
         include_0dte=True,
@@ -82,31 +73,18 @@ def test_gamma_router_only_invokes_selected_view(monkeypatch) -> None:
         selected_exp_str="2026-04-18",
         options_dir=Path("/tmp/options"),
     )
-    assert calls == ["intraday"]
+    assert calls == ["gex"]
 
 
-def test_gamma_router_rejects_chain_history_view(monkeypatch) -> None:
-    with pytest.raises(ValueError, match="Unknown Gamma Map view"):
-        gamma_map._render_active_gamma_view(
-            active_view="Chain GEX History",
+def test_gamma_router_rejects_unknown_view(monkeypatch) -> None:
+    with pytest.raises(ValueError, match="Unknown GEX view"):
+        gamma_map._render_active_gex_view(
+            active_view="Nonexistent View",
             symbol="SPXW",
             today=date(2026, 4, 15),
             include_0dte=True,
             range_pct=5.0,
             selected_exp_str="2026-04-18",
-            options_dir=Path("/tmp/options"),
-        )
-
-
-def test_gamma_router_rejects_aggregate_history_view(monkeypatch) -> None:
-    with pytest.raises(ValueError, match="Unknown Gamma Map view"):
-        gamma_map._render_active_gamma_view(
-            active_view="GEX History",
-            symbol="SPXW",
-            today=date(2026, 4, 15),
-            include_0dte=True,
-            range_pct=5.0,
-            selected_exp_str=None,
             options_dir=Path("/tmp/options"),
         )
 
@@ -210,28 +188,33 @@ def test_render_history_tab_skips_single_expiry_for_aggregate_history(
 
 
 def test_gex_view_does_not_touch_history_snapshot_loader(monkeypatch, tmp_path: Path) -> None:
-    snapshot_path = tmp_path / "snapshot.csv"
     sample_df = pd.DataFrame(
         [{"underlying_price": 5000.0, "strike": 5000.0, "gamma": 0.01, "open_interest": 100.0}]
     )
+    history_loader_called: list[str] = []
 
     monkeypatch.setattr(
         gamma_map,
-        "find_latest_snapshots",
-        lambda symbol, start_date, days_out, include_0dte, data_dir: {
-            date(2026, 4, 18): snapshot_path
-        },
+        "_load_window_snapshot_data",
+        lambda **kwargs: ({date(2026, 4, 18): tmp_path / "snap.csv"}, sample_df, 5000.0, 250),
     )
     monkeypatch.setattr(
         gamma_map,
-        "find_all_snapshots_for_expiry",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("hidden history loader should not run")
-        ),
+        "find_historical_snapshot_times",
+        lambda *args, **kwargs: history_loader_called.append("find_historical") or [],
     )
-    monkeypatch.setattr(gamma_map, "load_options_snapshot", lambda path: sample_df)
+    monkeypatch.setattr(
+        gamma_map,
+        "load_historical_snapshot",
+        lambda *args, **kwargs: history_loader_called.append("load_historical") or sample_df,
+    )
     monkeypatch.setattr(gamma_map, "net_gex_by_strike", lambda df, spot, strike_range: sample_df)
-    monkeypatch.setattr(gamma_map, "net_gex_by_price", lambda df, spot, price_range: sample_df)
+    monkeypatch.setattr(
+        gamma_map, "net_gex_by_price", lambda df, spot, price_range: sample_df
+    )
+    monkeypatch.setattr(gamma_map, "find_raw_wall_strikes", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(gamma_map, "find_aggregate_wall_strikes", lambda *a, **kw: (None, None))
+    monkeypatch.setattr(gamma_map, "find_decision_zones", lambda *a, **kw: ([], []))
     monkeypatch.setattr(gamma_map, "build_gex_aggregate_chart", lambda *args, **kwargs: object())
     monkeypatch.setattr(gamma_map.st, "radio", lambda *args, **kwargs: 5)
     monkeypatch.setattr(gamma_map.st, "spinner", lambda *args, **kwargs: nullcontext())
@@ -246,16 +229,24 @@ def test_gex_view_does_not_touch_history_snapshot_loader(monkeypatch, tmp_path: 
         options_dir=tmp_path,
     )
 
+    assert history_loader_called == []
+
 
 def test_history_view_uses_selected_snapshot_and_reuses_single_expiry_chart(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    from datetime import datetime
+
     sample_df = pd.DataFrame(
         [{"underlying_price": 5000.0, "strike": 5000.0, "gamma": 0.01, "open_interest": 100.0}]
     )
-    first = tmp_path / "first.csv"
-    second = tmp_path / "second.csv"
+    parquet_path = tmp_path / "SPXW_samples_2026-04-15.parquet"
+    parquet_path.touch()
+    snapshot_times = [
+        datetime(2026, 4, 15, 14, 0, 0),
+        datetime(2026, 4, 15, 15, 0, 0),
+    ]
     chart_calls: list[tuple[float, float, str]] = []
     plotted: list[object] = []
 
@@ -266,13 +257,19 @@ def test_history_view_uses_selected_snapshot_and_reuses_single_expiry_chart(
     )
     monkeypatch.setattr(
         gamma_map,
-        "find_snapshots_for_expiry_on_date",
-        lambda symbol, expiry, sample_date, data_dir: [
-            (pd.Timestamp("2026-04-15T14:00:00").to_pydatetime(), first),
-            (pd.Timestamp("2026-04-15T15:00:00").to_pydatetime(), second),
-        ],
+        "parquet_path_for_date",
+        lambda symbol, sample_date: parquet_path,
     )
-    monkeypatch.setattr(gamma_map, "load_options_snapshot", lambda path: sample_df)
+    monkeypatch.setattr(
+        gamma_map,
+        "find_historical_snapshot_times",
+        lambda expiry, parquet_path: snapshot_times,
+    )
+    monkeypatch.setattr(
+        gamma_map,
+        "load_historical_snapshot",
+        lambda symbol, expiry, ts, parquet_path: sample_df,
+    )
     monkeypatch.setattr(
         gamma_map,
         "build_gex_single_expiry_chart",
@@ -329,7 +326,7 @@ def test_history_view_warns_when_selected_date_has_no_snapshots(
 
 
 
-def test_render_gamma_map_tab_limits_symbol_options(monkeypatch, tmp_path: Path) -> None:
+def test_render_gex_tab_limits_symbol_options(monkeypatch, tmp_path: Path) -> None:
     captured_options: list[str] = []
 
     monkeypatch.setattr(gamma_map.st, "subheader", lambda *args, **kwargs: None)
@@ -345,8 +342,8 @@ def test_render_gamma_map_tab_limits_symbol_options(monkeypatch, tmp_path: Path)
     monkeypatch.setattr(gamma_map.st, "selectbox", _selectbox)
     monkeypatch.setattr(gamma_map.st, "slider", lambda *args, **kwargs: 5.0)
     monkeypatch.setattr(gamma_map.st, "segmented_control", lambda *args, **kwargs: "GEX")
-    monkeypatch.setattr(gamma_map, "_render_active_gamma_view", lambda **kwargs: None)
+    monkeypatch.setattr(gamma_map, "_render_active_gex_view", lambda **kwargs: None)
 
-    gamma_map.render_gamma_map_tab(options_dir=tmp_path, candle_dir=tmp_path)
+    gamma_map.render_gex_tab(options_dir=tmp_path, candle_dir=tmp_path)
 
     assert captured_options == ["SPXW", "SPX"]
