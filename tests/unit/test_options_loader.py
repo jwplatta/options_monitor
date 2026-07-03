@@ -15,7 +15,6 @@ from trade_dash.data.options import (
     find_historical_snapshot_times,
     find_latest_snapshots,
     find_snapshots_for_expiry_on_date,
-    find_snapshots_for_window_on_date,
     list_expirations,
     list_expirations_for_window_on_date,
     list_snapshot_dates,
@@ -26,7 +25,6 @@ from trade_dash.data.options import (
     load_historical_snapshot,
     load_options_snapshot,
     parquet_path_for_date,
-    select_window_snapshots_at_or_before,
 )
 
 
@@ -39,7 +37,6 @@ def clear_streamlit_caches() -> None:
     find_latest_snapshots.clear()
     find_all_snapshots_for_expiry.clear()
     find_snapshots_for_expiry_on_date.clear()
-    find_snapshots_for_window_on_date.clear()
     load_options_snapshot.clear()
     find_historical_snapshot_times.clear()
     load_historical_snapshot.clear()
@@ -557,69 +554,6 @@ def test_list_expirations_for_window_on_date_anchors_to_sample_date(tmp_path: Pa
         metadata_db_path=db_path,
     )
     assert expiries == [date(2026, 6, 3), date(2026, 6, 5)]
-
-
-def test_find_snapshots_for_window_on_date_groups_by_expiry(tmp_path: Path) -> None:
-    db_path = _create_metadata_db(tmp_path / "tickrake.sqlite3")
-    first = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-03_2026-06-03_13-30-00.csv")
-    second = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-03_2026-06-03_13-31-00.csv")
-    other = _write_snapshot_csv(tmp_path / "SPXW_exp2026-06-05_2026-06-03_13-32-00.csv")
-
-    _insert_metadata_row(
-        db_path,
-        csv_path=first,
-        expiration_date="2026-06-03",
-        last_observed_at="2026-06-03T13:30:00+00:00",
-    )
-    _insert_metadata_row(
-        db_path,
-        csv_path=second,
-        expiration_date="2026-06-03",
-        last_observed_at="2026-06-03T13:31:00+00:00",
-    )
-    _insert_metadata_row(
-        db_path,
-        csv_path=other,
-        expiration_date="2026-06-05",
-        last_observed_at="2026-06-03T13:32:00+00:00",
-    )
-
-    grouped = find_snapshots_for_window_on_date(
-        "SPXW",
-        sample_date=date(2026, 6, 3),
-        expiries=(date(2026, 6, 3), date(2026, 6, 5)),
-        metadata_db_path=db_path,
-    )
-    assert grouped == {
-        date(2026, 6, 3): [
-            (datetime.fromisoformat("2026-06-03T13:30:00+00:00"), first),
-            (datetime.fromisoformat("2026-06-03T13:31:00+00:00"), second),
-        ],
-        date(2026, 6, 5): [
-            (datetime.fromisoformat("2026-06-03T13:32:00+00:00"), other),
-        ],
-    }
-
-
-def test_select_window_snapshots_at_or_before_uses_latest_prior_snapshot() -> None:
-    grouped = {
-        date(2026, 6, 3): [
-            (datetime.fromisoformat("2026-06-03T13:30:00+00:00"), Path("/tmp/first.csv")),
-            (datetime.fromisoformat("2026-06-03T13:35:00+00:00"), Path("/tmp/second.csv")),
-        ],
-        date(2026, 6, 5): [
-            (datetime.fromisoformat("2026-06-03T13:31:00+00:00"), Path("/tmp/third.csv")),
-        ],
-    }
-
-    selected = select_window_snapshots_at_or_before(
-        grouped,
-        replay_time=datetime.fromisoformat("2026-06-03T13:32:00+00:00"),
-    )
-    assert selected == {
-        date(2026, 6, 3): Path("/tmp/first.csv"),
-        date(2026, 6, 5): Path("/tmp/third.csv"),
-    }
 
 
 def test_missing_metadata_db_raises_clear_error(tmp_path: Path) -> None:

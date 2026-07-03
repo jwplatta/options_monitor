@@ -51,7 +51,7 @@ def _to_chicago_time(ts: pd.Timestamp | date | object) -> object:
         py_ts = ts.to_pydatetime()
         return py_ts.replace(tzinfo=UTC).astimezone(_CHICAGO).replace(tzinfo=None)
     if hasattr(ts, "replace"):
-        return ts.replace(tzinfo=UTC).astimezone(_CHICAGO).replace(tzinfo=None)  # type: ignore[union-attr]
+        return ts.replace(tzinfo=UTC).astimezone(_CHICAGO).replace(tzinfo=None)
     return ts
 
 
@@ -300,12 +300,13 @@ def _render_gex_history_view(
     if st.session_state.get("gm_gex_history_snapshot_time") not in local_replay_times:
         st.session_state["gm_gex_history_snapshot_time"] = local_replay_times[-1]
 
-    selected_ts_local = st.select_slider(
+    st.select_slider(
         "Point in time (CT)",
         options=local_replay_times,
         key="gm_gex_history_snapshot_time",
         format_func=lambda ts: ts.strftime("%Y-%m-%d %H:%M:%S CT"),
     )
+    selected_ts_local = st.session_state["gm_gex_history_snapshot_time"]
     replay_idx = local_replay_times.index(selected_ts_local)
     replay_time = replay_times[replay_idx]
 
@@ -497,7 +498,9 @@ def _render_history_view(
         snapshot_idx = local_timestamps.index(selected_ts_local)
 
     selected_ts = snapshot_times[snapshot_idx]
-    selected_ts_local = local_timestamps[snapshot_idx]
+    ts_local_obj = local_timestamps[snapshot_idx]
+    assert isinstance(ts_local_obj, datetime)
+    selected_ts_local = ts_local_obj
     st.caption(f"Snapshot time: {selected_ts_local.strftime('%Y-%m-%d %H:%M:%S CT')}")
 
     single_opts = load_historical_snapshot(symbol, selected_exp, selected_ts, parquet_path)
