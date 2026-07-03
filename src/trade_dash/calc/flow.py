@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -27,6 +28,7 @@ def compute_intraday_flow(
     bucket_minutes: int = 5,
     weight_by_delta: bool = True,
     target_date: date | None = None,
+    preloaded: pd.DataFrame | None = None,
 ) -> tuple[list[float], list[datetime], list[list[float]], list[float]]:
     """Compute intraday flow matrix for a heatmap.
 
@@ -40,42 +42,52 @@ def compute_intraday_flow(
     flow value for strikes[i] at timestamps[j], and prices[j] is the
     underlying_price at timestamps[j]. Only snapshots matching `target_date`
     (defaults to today) are included.
+    preloaded: if provided, used instead of loading from snapshot paths (historical parquet path).
     """
-    if not snapshots:
+    if not snapshots and preloaded is None:
         return [], [], [], []
 
-    local_target_date = target_date if target_date is not None else date.today()
+    price_by_ts: dict[Any, float] = {}
 
-    # Filter to the selected Chicago-local session date and downsample.
-    today_snapshots = sorted(
-        ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == local_target_date),
-        key=lambda x: x[0],
-    )
-    seen_buckets: set[datetime] = set()
-    sampled: list[tuple[datetime, Path]] = []
-    for ts, path in today_snapshots:
-        floored = (ts.minute // bucket_minutes) * bucket_minutes
-        bucket = ts.replace(minute=floored, second=0, microsecond=0)
-        if bucket not in seen_buckets:
-            seen_buckets.add(bucket)
-            sampled.append((ts, path))
+    if preloaded is not None:
+        combined = preloaded.copy()
+        # Build price_by_ts from the preloaded data
+        for ts_val, grp in combined.groupby("_ts"):
+            price_val = pd.to_numeric(grp["underlying_price"], errors="coerce").dropna()
+            if not price_val.empty:
+                price_by_ts[ts_val] = float(price_val.iloc[0])
+    else:
+        local_target_date = target_date if target_date is not None else date.today()
 
-    # Load sampled snapshots, tag each row with its timestamp
-    # Also capture one underlying_price per timestamp for the price overlay
-    frames: list[pd.DataFrame] = []
-    price_by_ts: dict[datetime, float] = {}
-    for ts, path in sampled:
-        df = load_options_snapshot(path).copy()
-        df["_ts"] = ts
-        frames.append(df)
-        price_val = pd.to_numeric(df["underlying_price"], errors="coerce").dropna()
-        if not price_val.empty:
-            price_by_ts[ts] = float(price_val.iloc[0])
+        # Filter to the selected Chicago-local session date and downsample.
+        today_snapshots = sorted(
+            ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == local_target_date),
+            key=lambda x: x[0],
+        )
+        seen_buckets: set[datetime] = set()
+        sampled: list[tuple[datetime, Path]] = []
+        for ts, path in today_snapshots:
+            floored = (ts.minute // bucket_minutes) * bucket_minutes
+            bucket = ts.replace(minute=floored, second=0, microsecond=0)
+            if bucket not in seen_buckets:
+                seen_buckets.add(bucket)
+                sampled.append((ts, path))
 
-    if not frames:
-        return [], [], [], []
+        # Load sampled snapshots, tag each row with its timestamp
+        # Also capture one underlying_price per timestamp for the price overlay
+        frames: list[pd.DataFrame] = []
+        for ts, path in sampled:
+            df = load_options_snapshot(path).copy()
+            df["_ts"] = ts
+            frames.append(df)
+            price_val = pd.to_numeric(df["underlying_price"], errors="coerce").dropna()
+            if not price_val.empty:
+                price_by_ts[ts] = float(price_val.iloc[0])
 
-    combined = pd.concat(frames, ignore_index=True)
+        if not frames:
+            return [], [], [], []
+
+        combined = pd.concat(frames, ignore_index=True)
 
     # Drop rows with no volume
     combined = combined[combined["total_volume"] > 0]

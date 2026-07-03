@@ -28,6 +28,7 @@ def compute_flow_profile(
     contract_filter: str = "BOTH",
     ema_span: int = 20,
     as_of: datetime | None = None,
+    preloaded: pd.DataFrame | None = None,
 ) -> tuple[list[float], list[float], list[float]]:
     """Compute per-strike aggregated flow for a single trading session.
 
@@ -36,31 +37,39 @@ def compute_flow_profile(
     call/put_flow_by_strike: parallel arrays aligned to strikes.
     mode: "lookback" (volume delta over lookback_window) or "cumulative" (total volume).
     as_of: if provided, only snapshots with timestamp <= as_of are included.
+    preloaded: if provided, used instead of loading from snapshot paths (historical parquet path).
     """
     if mode not in ("lookback", "cumulative"):
         raise ValueError(f"mode must be 'lookback' or 'cumulative', got {mode!r}")
 
-    if not snapshots:
+    if not snapshots and preloaded is None:
         return [], [], []
 
-    # Filter to sample_date in Chicago time, sort ascending.
-    session = sorted(
-        ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date),
-        key=lambda x: x[0],
-    )
-    if as_of is not None:
-        session = [(ts, path) for ts, path in session if ts <= as_of]
-    if not session:
-        return [], [], []
+    if preloaded is not None:
+        combined = preloaded.copy()
+        if as_of is not None:
+            combined = combined[combined["_ts"] <= as_of]
+        if combined.empty:
+            return [], [], []
+    else:
+        # Filter to sample_date in Chicago time, sort ascending.
+        session = sorted(
+            ((ts, path) for ts, path in snapshots if _to_chicago(ts).date() == sample_date),
+            key=lambda x: x[0],
+        )
+        if as_of is not None:
+            session = [(ts, path) for ts, path in session if ts <= as_of]
+        if not session:
+            return [], [], []
 
-    # Load all session snapshots, tag with UTC timestamp.
-    frames: list[pd.DataFrame] = []
-    for ts, path in session:
-        df = load_options_snapshot(path).copy()
-        df["_ts"] = ts
-        frames.append(df)
+        # Load all session snapshots, tag with UTC timestamp.
+        frames: list[pd.DataFrame] = []
+        for ts, path in session:
+            df = load_options_snapshot(path).copy()
+            df["_ts"] = ts
+            frames.append(df)
 
-    combined = pd.concat(frames, ignore_index=True)
+        combined = pd.concat(frames, ignore_index=True)
 
     # Coerce required numeric columns, uppercase contract_type, drop bad rows.
     for col in ["bid", "ask", "last", "total_volume", "delta", "strike"]:
@@ -105,9 +114,11 @@ def compute_flow_profile(
         trade_direction = (vwema_tp - 0.5) * 2
 
         if mode == "lookback":
-            new_volume = (grp["total_volume"] - grp["total_volume"].shift(lookback_window)).clip(
-                lower=0.0
-            ).fillna(0.0)
+            new_volume = (
+                (grp["total_volume"] - grp["total_volume"].shift(lookback_window))
+                .clip(lower=0.0)
+                .fillna(0.0)
+            )
         else:
             new_volume = grp["total_volume"]
 
@@ -127,12 +138,8 @@ def compute_flow_profile(
 
     flow_df = pd.DataFrame(flow_rows)
 
-    call_by_strike = (
-        flow_df[flow_df["contract_type"] == "CALL"].groupby("strike")["flow"].sum()
-    )
-    put_by_strike = (
-        flow_df[flow_df["contract_type"] == "PUT"].groupby("strike")["flow"].sum()
-    )
+    call_by_strike = flow_df[flow_df["contract_type"] == "CALL"].groupby("strike")["flow"].sum()
+    put_by_strike = flow_df[flow_df["contract_type"] == "PUT"].groupby("strike")["flow"].sum()
 
     all_strikes = sorted(set(call_by_strike.index) | set(put_by_strike.index))
     strike_index = pd.Index(all_strikes, name="strike")
