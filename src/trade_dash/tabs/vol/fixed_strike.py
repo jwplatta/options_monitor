@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -36,17 +36,20 @@ def _load_historical_frames(
     sample_dates is the corresponding Chicago market date.
     """
     today = date.today()
-    start_expiry = today
-    end_expiry = date(today.year + 1, today.month, today.day)
+    lookback_start = today - timedelta(days=lookback_days)
+    # expiry_range covers all contracts that could appear in a lookback window
+    expiry_range = (today, date(today.year + 1, today.month, today.day))
     parquet_glob = str(PARQUET_OPTIONS_DIR / "*" / "*" / "*" / f"{symbol}_samples_*.parquet")
 
-    df = load_historical_lookback(
-        symbol, parquet_glob, (start_expiry, end_expiry), interval_minutes
-    )
+    df = load_historical_lookback(symbol, parquet_glob, expiry_range, interval_minutes)
     if df.empty:
         return [], []
 
     df["sampled_at"] = pd.to_datetime(df["sampled_at"], utc=True)
+    lookback_start_ts = pd.Timestamp(lookback_start, tz="UTC")
+    df = df[df["sampled_at"] >= lookback_start_ts]
+    if df.empty:
+        return [], []
 
     frames: list[pd.DataFrame] = []
     sample_dates: list[date] = []
