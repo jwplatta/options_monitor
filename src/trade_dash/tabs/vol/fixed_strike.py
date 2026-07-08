@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -28,12 +28,12 @@ def _load_historical_frames(
     lookback_days: int,
     interval_minutes: int,
     options_dir: Path,
-) -> tuple[list[pd.DataFrame], list[date]]:
+) -> tuple[list[pd.DataFrame], list[datetime]]:
     """Load interval-downsampled historical chain snapshots for z-score bucket building.
 
     Queries DuckDB across all parquet files for the lookback window. Returns
-    (frames, sample_dates) where each frame is one sampled_at slice and
-    sample_dates is the corresponding Chicago market date.
+    (frames, sample_datetimes) where each frame is one sampled_at slice and
+    sample_datetimes are the corresponding UTC datetimes.
     """
     today = date.today()
     lookback_start = today - timedelta(days=lookback_days)
@@ -46,13 +46,12 @@ def _load_historical_frames(
     df["sampled_at"] = pd.to_datetime(df["sampled_at"], utc=True)
 
     frames: list[pd.DataFrame] = []
-    sample_dates: list[date] = []
+    sample_datetimes: list[datetime] = []
     for sampled_at, group in df.groupby("sampled_at", sort=True):
-        chicago_date = pd.Timestamp(str(sampled_at)).astimezone(_CHICAGO).date()
         frames.append(group.reset_index(drop=True))
-        sample_dates.append(chicago_date)
+        sample_datetimes.append(pd.Timestamp(str(sampled_at)).to_pydatetime())
 
-    return frames, sample_dates
+    return frames, sample_datetimes
 
 
 def render_fixed_strike_tab(options_dir: Path = OPTIONS_DIR) -> None:
@@ -113,24 +112,24 @@ def render_fixed_strike_tab(options_dir: Path = OPTIONS_DIR) -> None:
 
     zscore_matrix: pd.DataFrame | None = None
     with st.spinner("Loading historical data for z-scores…"):
-        hist_frames, hist_dates = _load_historical_frames(
+        hist_frames, hist_datetimes = _load_historical_frames(
             "SPXW", fsv_lookback, fsv_interval, options_dir
         )
     if hist_frames:
-        bucket_stats = build_bucket_stats(hist_frames, hist_dates)
+        bucket_stats = build_bucket_stats(hist_frames, hist_datetimes)
         zscore_matrix = compute_zscore_matrix(
             loaded,
             bucket_stats,
             spot=spot,
             contract_type=fsv_contract_type,
-            today=date.today(),
+            now=datetime.now(_CHICAGO),
         )
     _render_fsv_table(
         iv_matrix,
         spot=spot,
         otm_pct=fsv_otm_pct,
         zscore_matrix=zscore_matrix,
-        zscore_sample_days=len(set(hist_dates)),
+        zscore_sample_days=len(set(dt.date() for dt in hist_datetimes)),
     )
 
 
