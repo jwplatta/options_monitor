@@ -420,18 +420,32 @@ def load_historical_lookback(
 ) -> pd.DataFrame:
     """Load downsampled historical data across multiple parquet files via DuckDB glob.
 
-    Filters to expiry_range and downsamples to rows where sampled_at falls on an
-    interval_minutes boundary (minute-of-day % interval_minutes == 0).
+    Filters to expiry_range and downsamples to the latest snapshot per
+    interval_minutes bucket (floor of sampled_at to the nearest interval boundary).
     """
     start_str = expiry_range[0].isoformat()
     end_str = expiry_range[1].isoformat()
     query = f"""
-        SELECT * FROM read_parquet('{parquet_glob}')
-        WHERE expiration_date BETWEEN '{start_str}' AND '{end_str}'
-          AND (
-            CAST(strftime('%H', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER) * 60
-            + CAST(strftime('%M', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER)
-          ) % {interval_minutes} = 0
+        WITH bucketed AS (
+            SELECT *,
+                epoch_ms(
+                    CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
+                    * ({interval_minutes} * 60000) AS BIGINT)
+                ) AS interval_bucket
+            FROM read_parquet('{parquet_glob}')
+            WHERE expiration_date BETWEEN '{start_str}' AND '{end_str}'
+        ),
+        ranked AS (
+            SELECT *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY interval_bucket, expiration_date, strike, contract_type
+                    ORDER BY sampled_at DESC
+                ) AS rn
+            FROM bucketed
+        )
+        SELECT * EXCLUDE (interval_bucket, rn)
+        FROM ranked
+        WHERE rn = 1
         ORDER BY sampled_at, expiration_date
     """
     df = duckdb.execute(query).df()
@@ -453,16 +467,31 @@ def load_historical_sample_window(
     Unlike load_historical_lookback (which filters by expiration_date), this filters
     by sampled_at >= sample_start — the date the snapshot was taken. Intended for
     z-score history where we want all contracts sampled within a lookback window,
-    including past-expiry contracts.
+    including past-expiry contracts. Downsamples to the latest snapshot per
+    interval_minutes bucket (floor of sampled_at to the nearest interval boundary).
     """
     start_str = sample_start.isoformat()
     query = f"""
-        SELECT * FROM read_parquet('{parquet_glob}')
-        WHERE CAST(sampled_at AS TIMESTAMPTZ) >= TIMESTAMPTZ '{start_str}'
-          AND (
-            CAST(strftime('%H', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER) * 60
-            + CAST(strftime('%M', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER)
-          ) % {interval_minutes} = 0
+        WITH bucketed AS (
+            SELECT *,
+                epoch_ms(
+                    CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
+                    * ({interval_minutes} * 60000) AS BIGINT)
+                ) AS interval_bucket
+            FROM read_parquet('{parquet_glob}')
+            WHERE CAST(sampled_at AS TIMESTAMPTZ) >= TIMESTAMPTZ '{start_str}'
+        ),
+        ranked AS (
+            SELECT *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY interval_bucket, expiration_date, strike, contract_type
+                    ORDER BY sampled_at DESC
+                ) AS rn
+            FROM bucketed
+        )
+        SELECT * EXCLUDE (interval_bucket, rn)
+        FROM ranked
+        WHERE rn = 1
         ORDER BY sampled_at, expiration_date
     """
     df = duckdb.execute(query).df()
@@ -482,19 +511,34 @@ def load_historical_expiry_lookback(
     """Load downsampled data for a single expiry across multiple parquet files.
 
     Pulls every snapshot for `expiry` from all parquet files matched by
-    `parquet_glob`, downsampled to `interval_minutes` boundaries.  Useful for
-    vol history, skew evolution, and term-structure replay over a lookback window.
+    `parquet_glob`, downsampled to the latest snapshot per interval_minutes bucket.
+    Useful for vol history, skew evolution, and term-structure replay over a lookback
+    window.
 
     Example glob: str(PARQUET_OPTIONS_DIR / "*/*/*/SPXW_samples_*.parquet")
     """
     expiry_str = expiry.isoformat()
     query = f"""
-        SELECT * FROM read_parquet('{parquet_glob}')
-        WHERE expiration_date = '{expiry_str}'
-          AND (
-            CAST(strftime('%H', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER) * 60
-            + CAST(strftime('%M', CAST(sampled_at AS TIMESTAMPTZ)) AS INTEGER)
-          ) % {interval_minutes} = 0
+        WITH bucketed AS (
+            SELECT *,
+                epoch_ms(
+                    CAST(floor(epoch_ms(sampled_at) / ({interval_minutes} * 60000))
+                    * ({interval_minutes} * 60000) AS BIGINT)
+                ) AS interval_bucket
+            FROM read_parquet('{parquet_glob}')
+            WHERE expiration_date = '{expiry_str}'
+        ),
+        ranked AS (
+            SELECT *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY interval_bucket, strike, contract_type
+                    ORDER BY sampled_at DESC
+                ) AS rn
+            FROM bucketed
+        )
+        SELECT * EXCLUDE (interval_bucket, rn)
+        FROM ranked
+        WHERE rn = 1
         ORDER BY sampled_at
     """
     df = duckdb.execute(query).df()

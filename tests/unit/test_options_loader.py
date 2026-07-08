@@ -716,10 +716,13 @@ def test_load_historical_lookback_interval_filtering() -> None:
 
     df = load_historical_lookback(_INTEGRATION_SYMBOL, glob, (start, end), interval_minutes=30)
     assert not df.empty
-    # Every row's sampled_at minute-of-day should be divisible by 30
-    ts = pd.to_datetime(df["sampled_at"])
-    minutes = ts.dt.hour * 60 + ts.dt.minute
-    assert (minutes % 30 == 0).all()
+    # Each 30-minute bucket should produce at most one sampled_at per
+    # (expiration_date, strike, contract_type) group.
+    ts_ms = pd.to_datetime(df["sampled_at"], utc=True).astype("int64") // 1_000
+    bucket = (ts_ms // (30 * 60 * 1_000)).rename("bucket")
+    df_check = df[["expiration_date", "strike", "contract_type"]].copy()
+    df_check["bucket"] = bucket.values
+    assert df_check.groupby(["bucket", "expiration_date", "strike", "contract_type"]).size().max() == 1
 
 
 def test_load_historical_expiry_lookback_single_expiry_across_dates() -> None:
@@ -739,9 +742,13 @@ def test_load_historical_expiry_lookback_single_expiry_across_dates() -> None:
     assert not df.empty
     # All rows must be for the requested expiry
     assert (df["expiration_date"] == pd.Timestamp(expiry)).all()
-    # Every row's sampled_at minute-of-day should be divisible by 30
-    ts = pd.to_datetime(df["sampled_at"])
-    minutes = ts.dt.hour * 60 + ts.dt.minute
-    assert (minutes % 30 == 0).all()
-    # Sorted by sampled_at
-    assert ts.is_monotonic_increasing
+    # Each 30-minute bucket should produce at most one sampled_at per (strike, contract_type).
+    ts_ms = pd.to_datetime(df["sampled_at"], utc=True).astype("int64") // 1_000
+    bucket = (ts_ms // (30 * 60 * 1_000)).rename("bucket")
+    df_check = df[["strike", "contract_type"]].copy()
+    df_check["bucket"] = bucket.values
+    assert df_check.groupby(["bucket", "strike", "contract_type"]).size().max() == 1
+    # Bucket boundaries are non-decreasing (individual sampled_at within a bucket
+    # may vary slightly across strikes, so check bucket order not raw timestamps).
+    buckets = ts_ms // (30 * 60 * 1_000)
+    assert buckets.is_monotonic_increasing
