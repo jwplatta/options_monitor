@@ -8,10 +8,11 @@ from trade_dash.config import CANDLE_DIR, OPTIONS_DIR
 from trade_dash.tabs.flow import render_flow_tab
 from trade_dash.tabs.gex import render_gex_tab
 from trade_dash.tabs.history import render_history_tab
+from trade_dash.tabs.oi import render_oi_tab
 from trade_dash.tabs.underlying import render_underlying_tab
 from trade_dash.tabs.vol import render_vol_tab
 
-_TOP_LEVEL_TABS = ["Underlying", "Vol", "GEX", "Flow", "History"]
+_TOP_LEVEL_TABS = ["Underlying", "Vol", "GEX", "Flow", "OI", "History"]
 
 _TAB_SPINNER_MSG: dict[str, str] = {
     "Underlying": "Loading Underlying...",
@@ -19,6 +20,7 @@ _TAB_SPINNER_MSG: dict[str, str] = {
     "GEX": "Loading GEX...",
     "History": "Loading History...",
     "Flow": "Loading Flow...",
+    "OI": "Loading Open Interest...",
 }
 
 
@@ -38,6 +40,9 @@ def _render_active_dashboard_tab(active_tab: str) -> None:
         return
     if active_tab == "Flow":
         render_flow_tab(options_dir=OPTIONS_DIR)
+        return
+    if active_tab == "OI":
+        render_oi_tab(options_dir=OPTIONS_DIR)
         return
     raise ValueError(f"Unknown dashboard tab: {active_tab}")
 
