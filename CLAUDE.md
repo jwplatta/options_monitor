@@ -1,6 +1,6 @@
-# trade_dash
+# Options Monitor
 
-Streamlit trading dashboard. Data is sourced from tickrake (Schwab options snapshots + IBKR/Schwab candle history) stored locally at `~/.tickrake/data/`.
+Streamlit options-data and market-monitoring dashboard. Data is sourced from tickrake (Schwab options snapshots + IBKR/Schwab candle history) stored locally at `~/.tickrake/data/`.
 
 ## Commands
 

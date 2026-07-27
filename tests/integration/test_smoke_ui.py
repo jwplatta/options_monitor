@@ -1,4 +1,4 @@
-"""Playwright smoke tests for the trade_dash Streamlit UI."""
+"""Playwright smoke tests for the Options Monitor Streamlit UI."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from playwright.sync_api import Page, expect
 def test_dashboard_loads_title(page: Page, streamlit_server: str) -> None:
     """Dashboard loads without error and shows the current navigation control."""
     page.goto(streamlit_server)
-    page.wait_for_selector("text=trade_dash", timeout=20000)
+    page.wait_for_selector("text=Options Monitor", timeout=20000)
     page.wait_for_selector("button:has-text('Regime')", timeout=20000)
     assert page.title() is not None
 

@@ -1,4 +1,4 @@
-"""Streamlit application for the trading dashboard."""
+"""Streamlit application for Options Monitor."""
 
 from __future__ import annotations
 
@@ -48,15 +48,15 @@ def _render_active_dashboard_tab(active_tab: str) -> None:
 
 
 def render_dashboard() -> None:
-    """Render the main 3-tab Streamlit dashboard."""
+    """Render the main Options Monitor dashboard."""
     st.set_page_config(
-        page_title="trade_dash",
+        page_title="Options Monitor",
         page_icon=":chart_with_upwards_trend:",
         layout="wide",
     )
 
     with st.sidebar:
-        st.title("trade_dash")
+        st.title("Options Monitor")
         active_tab = str(
             st.radio(
                 "Navigation",

@@ -1,6 +1,6 @@
-# trade_dash
+# Options Monitor
 
-Trading dashboard application built with Streamlit.
+Options-data and market-monitoring dashboard built with Streamlit.
 
 ## Stack
 
@@ -18,7 +18,7 @@ uv sync
 uv run trade-dash
 ```
 
-The command above starts Streamlit and serves the dashboard in your browser.
+The command above starts Streamlit and serves Options Monitor in your browser.
 
 ## Development
 

@@ -1,8 +1,8 @@
-# Trade Dashboard Project
+# Options Monitor Project
 
 ## Motivation
 
-We want to build a streamlit dashboard that answers the following questions:
+We want to build Options Monitor as a Streamlit dashboard that answers the following questions:
 
 - What regime am I in?
   - Is the current regime exhausting?
