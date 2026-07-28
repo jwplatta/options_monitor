@@ -15,7 +15,7 @@ Options-data and market-monitoring dashboard built with Streamlit.
 
 ```bash
 uv sync
-uv run trade-dash
+uv run options-monitor
 ```
 
 The command above starts Streamlit and serves Options Monitor in your browser.

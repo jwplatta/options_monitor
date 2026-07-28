@@ -1,5 +1,5 @@
 [project]
-name = "trade-dash"
+name = "options-monitor"
 version = "0.1.0"
 description = "Options-data and market-monitoring dashboard"
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-trade-dash = "trade_dash.__main__:main"
+options-monitor = "trade_dash.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

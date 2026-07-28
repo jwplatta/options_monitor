@@ -12,7 +12,7 @@ uv sync
 3. Start the dashboard locally when needed:
 
 ```bash
-uv run trade-dash
+uv run options-monitor
 ```
 
 ## Workflow
