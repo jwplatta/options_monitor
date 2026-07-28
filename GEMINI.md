@@ -1,6 +1,6 @@
-# Trade Dash: Project Instructions
+# Options Monitor: Project Instructions
 
-This project is a Streamlit-based options trading dashboard focused on visualizing Gamma Exposure (GEX), aggressive flow (Maker-Taker), and volatility metrics.
+This project is a Streamlit-based options-data and market-monitoring dashboard focused on visualizing Gamma Exposure (GEX), aggressive flow (Maker-Taker), and volatility metrics.
 
 ## Core Mandates
 

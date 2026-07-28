@@ -1,7 +1,7 @@
 [project]
 name = "trade-dash"
 version = "0.1.0"
-description = "Trading dashboard application"
+description = "Options-data and market-monitoring dashboard"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
