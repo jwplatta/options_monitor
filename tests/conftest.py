@@ -14,7 +14,7 @@ import requests
 
 def _app_path() -> Path:
     """Return absolute path to app.py."""
-    return Path(__file__).parent.parent / "src" / "trade_dash" / "app.py"
+    return Path(__file__).parent.parent / "src" / "options_monitor" / "app.py"
 
 
 @pytest.fixture(scope="session")

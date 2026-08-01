@@ -1,1 +1,1 @@
-"""Test suite for trade_dash."""
+"""Test suite for options_monitor."""

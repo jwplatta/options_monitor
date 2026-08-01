@@ -6,10 +6,10 @@ This project is a Streamlit-based options-data and market-monitoring dashboard f
 
 - **Skill Management**: Use `skillex` to pull, update, and manage shared skills as needed to enhance your capabilities within this workspace.
 - **Architectural Pattern**: Follow the established separation of concerns:
-    - `src/trade_dash/data/`: Data loading and schema definitions (Pandas).
-    - `src/trade_dash/calc/`: Pure mathematical and data transformation logic.
-    - `src/trade_dash/charts/`: Plotly figure generation (standardize on `plotly_dark` template).
-    - `src/trade_dash/tabs/`: Streamlit UI components and layout assembly.
+    - `src/options_monitor/data/`: Data loading and schema definitions (Pandas).
+    - `src/options_monitor/calc/`: Pure mathematical and data transformation logic.
+    - `src/options_monitor/charts/`: Plotly figure generation (standardize on `plotly_dark` template).
+    - `src/options_monitor/tabs/`: Streamlit UI components and layout assembly.
 - **Timezone Convention**: All market data and charts must standardize on `America/Chicago` time. Use `zoneinfo.ZoneInfo("America/Chicago")` for conversions. Perform UTC to Chicago naive conversions (removing `tzinfo` after conversion) to maintain consistency with Plotly and Streamlit rendering.
 
 ## Engineering Standards

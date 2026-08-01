@@ -7,8 +7,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
-
-from trade_dash.calc.maker_taker import compute_maker_taker_flow
+from options_monitor.calc.maker_taker import compute_maker_taker_flow
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,7 +94,16 @@ def test_returns_empty_when_no_snapshots_on_target_date(tmp_path: Path) -> None:
     snap = _make_snapshot(
         tmp_path,
         ts,
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "5",
+            }
+        ],
     )
     result = compute_maker_taker_flow([snap], spot=5000.0, target_date=date(2026, 4, 28))
     assert result == ([], [], [], [], [])
@@ -105,12 +113,30 @@ def test_target_date_filter_uses_chicago_local_date_for_utc_snapshots(tmp_path: 
     prior_local_evening = _make_snapshot(
         tmp_path,
         datetime(2026, 6, 5, 0, 30, 0, tzinfo=UTC),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "5",
+            }
+        ],
     )
     target_local_morning = _make_snapshot(
         tmp_path,
         datetime(2026, 6, 5, 14, 30, 0, tzinfo=UTC),
-        [{"contract_type": "CALL", "strike": "5025", "bid": "10", "ask": "12", "last": "11.5", "last_size": "7"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5025",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "7",
+            }
+        ],
     )
 
     timestamps, strikes, flows, bucket_times, bucket_prices = compute_maker_taker_flow(
@@ -131,12 +157,30 @@ def test_target_date_filter_treats_naive_snapshot_datetimes_as_utc(tmp_path: Pat
     prior_local_evening = _make_snapshot(
         tmp_path,
         datetime(2026, 6, 5, 0, 30, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "5",
+            }
+        ],
     )
     target_local_morning = _make_snapshot(
         tmp_path,
         datetime(2026, 6, 5, 14, 30, 0),
-        [{"contract_type": "CALL", "strike": "5025", "bid": "10", "ask": "12", "last": "11.5", "last_size": "7"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5025",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "7",
+            }
+        ],
     )
 
     timestamps, strikes, flows, bucket_times, bucket_prices = compute_maker_taker_flow(
@@ -163,13 +207,31 @@ def test_last_snapshot_selected_per_bucket(tmp_path: Path) -> None:
     snap1 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 1, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "10"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "10",
+            }
+        ],
         underlying_price=4990.0,
     )
     snap2 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 4, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "10"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "10",
+            }
+        ],
         underlying_price=5010.0,
     )
     _, _, _, _, bucket_prices = compute_maker_taker_flow(
@@ -193,11 +255,18 @@ def test_sentiment_positive_when_last_near_ask(tmp_path: Path) -> None:
     snap = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.95", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.95",
+                "last_size": "5",
+            }
+        ],
     )
-    _, _, flows, _, _ = compute_maker_taker_flow(
-        [snap], spot=5000.0, target_date=date(2026, 4, 28)
-    )
+    _, _, flows, _, _ = compute_maker_taker_flow([snap], spot=5000.0, target_date=date(2026, 4, 28))
     assert len(flows) == 1
     assert flows[0] > 0
 
@@ -207,11 +276,18 @@ def test_sentiment_negative_when_last_near_bid(tmp_path: Path) -> None:
     snap = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "10.05", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "10.05",
+                "last_size": "5",
+            }
+        ],
     )
-    _, _, flows, _, _ = compute_maker_taker_flow(
-        [snap], spot=5000.0, target_date=date(2026, 4, 28)
-    )
+    _, _, flows, _, _ = compute_maker_taker_flow([snap], spot=5000.0, target_date=date(2026, 4, 28))
     assert len(flows) == 1
     assert flows[0] < 0
 
@@ -221,12 +297,30 @@ def test_sentiment_falls_back_to_tick_rule_inside_spread(tmp_path: Path) -> None
     snap1 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.0", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.0",
+                "last_size": "5",
+            }
+        ],
     )
     snap2 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 5, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.4", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.4",
+                "last_size": "5",
+            }
+        ],
     )
     _, _, flows, _, _ = compute_maker_taker_flow(
         [snap1, snap2], spot=5000.0, target_date=date(2026, 4, 28)
@@ -239,11 +333,18 @@ def test_sentiment_zero_when_inside_spread_without_prior_tick(tmp_path: Path) ->
     snap = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.0", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.0",
+                "last_size": "5",
+            }
+        ],
     )
-    _, _, flows, _, _ = compute_maker_taker_flow(
-        [snap], spot=5000.0, target_date=date(2026, 4, 28)
-    )
+    _, _, flows, _, _ = compute_maker_taker_flow([snap], spot=5000.0, target_date=date(2026, 4, 28))
     assert len(flows) == 1
     assert flows[0] == pytest.approx(0.0)
 
@@ -259,7 +360,16 @@ def test_moneyness_filter_excludes_far_strikes(tmp_path: Path) -> None:
     snap = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
-        [{"contract_type": "CALL", "strike": str(far_strike), "bid": "1", "ask": "2", "last": "1.8", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": str(far_strike),
+                "bid": "1",
+                "ask": "2",
+                "last": "1.8",
+                "last_size": "5",
+            }
+        ],
     )
     result = compute_maker_taker_flow(
         [snap], spot=5000.0, moneyness_pct=0.10, target_date=date(2026, 4, 28)
@@ -278,7 +388,14 @@ def test_contract_type_filter_excludes_wrong_type(tmp_path: Path) -> None:
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
         [
-            {"contract_type": "PUT", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"},
+            {
+                "contract_type": "PUT",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "5",
+            },
         ],
     )
     result = compute_maker_taker_flow(
@@ -292,7 +409,16 @@ def test_contract_type_filter_case_insensitive(tmp_path: Path) -> None:
     snap = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.5",
+                "last_size": "5",
+            }
+        ],
     )
     _, _, flows, _, _ = compute_maker_taker_flow(
         [snap], spot=5000.0, contract_filter="call", target_date=date(2026, 4, 28)
@@ -311,14 +437,16 @@ def test_top_n_strikes_limits_output(tmp_path: Path) -> None:
     for i in range(10):
         strike = 4900.0 + i * 25
         # Assign increasing last_size so we can predict which 3 are top
-        rows.append({
-            "contract_type": "CALL",
-            "strike": str(strike),
-            "bid": "10",
-            "ask": "12",
-            "last": "11.95",
-            "last_size": str((i + 1) * 10),
-        })
+        rows.append(
+            {
+                "contract_type": "CALL",
+                "strike": str(strike),
+                "bid": "10",
+                "ask": "12",
+                "last": "11.95",
+                "last_size": str((i + 1) * 10),
+            }
+        )
     snap = _make_snapshot(tmp_path, datetime(2026, 4, 28, 14, 0, 0), rows)
     _, strikes_out, _, _, _ = compute_maker_taker_flow(
         [snap], spot=5100.0, moneyness_pct=0.20, top_n_strikes=3, target_date=date(2026, 4, 28)
@@ -338,14 +466,32 @@ def test_weight_by_total_volume_uses_bucket_delta(tmp_path: Path) -> None:
     snap1 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 0, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.95",
-          "last_size": "1", "total_volume": "200"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.95",
+                "last_size": "1",
+                "total_volume": "200",
+            }
+        ],
     )
     snap2 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 5, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.95",
-          "last_size": "1", "total_volume": "260"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.95",
+                "last_size": "1",
+                "total_volume": "260",
+            }
+        ],
     )
     _, _, flows_ls, _, _ = compute_maker_taker_flow(
         [snap1, snap2], spot=5000.0, weight_by="last_size", target_date=date(2026, 4, 28)
@@ -362,20 +508,47 @@ def test_total_volume_uses_last_snapshot_in_bucket_for_delta(tmp_path: Path) -> 
     snap1 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 1, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.95",
-          "last_size": "1", "total_volume": "100"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.95",
+                "last_size": "1",
+                "total_volume": "100",
+            }
+        ],
     )
     snap2 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 4, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.95",
-          "last_size": "1", "total_volume": "120"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.95",
+                "last_size": "1",
+                "total_volume": "120",
+            }
+        ],
     )
     snap3 = _make_snapshot(
         tmp_path,
         datetime(2026, 4, 28, 14, 6, 0),
-        [{"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "11.95",
-          "last_size": "1", "total_volume": "150"}],
+        [
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last": "11.95",
+                "last_size": "1",
+                "total_volume": "150",
+            }
+        ],
     )
     _, _, flows, _, _ = compute_maker_taker_flow(
         [snap1, snap2, snap3],
@@ -399,12 +572,37 @@ def test_missing_last_column_returns_empty(tmp_path: Path) -> None:
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=cols_no_last)
         writer.writeheader()
-        writer.writerow({
-            "contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12",
-            "last_size": "5", "total_volume": "500", "underlying_price": "5000",
-            "expiration_date": "2026-04-30", "symbol": "SPXW", "open_interest": "100",
-            **{c: "" for c in cols_no_last if c not in ("contract_type", "strike", "bid", "ask", "last_size", "total_volume", "underlying_price", "expiration_date", "symbol", "open_interest")},
-        })
+        writer.writerow(
+            {
+                "contract_type": "CALL",
+                "strike": "5000",
+                "bid": "10",
+                "ask": "12",
+                "last_size": "5",
+                "total_volume": "500",
+                "underlying_price": "5000",
+                "expiration_date": "2026-04-30",
+                "symbol": "SPXW",
+                "open_interest": "100",
+                **{
+                    c: ""
+                    for c in cols_no_last
+                    if c
+                    not in (
+                        "contract_type",
+                        "strike",
+                        "bid",
+                        "ask",
+                        "last_size",
+                        "total_volume",
+                        "underlying_price",
+                        "expiration_date",
+                        "symbol",
+                        "open_interest",
+                    )
+                },
+            }
+        )
     snap = (datetime(2026, 4, 28, 14, 0, 0), path)
     result = compute_maker_taker_flow([snap], spot=5000.0, target_date=date(2026, 4, 28))
     assert result == ([], [], [], [], [])
@@ -418,9 +616,30 @@ def test_missing_last_column_returns_empty(tmp_path: Path) -> None:
 def test_return_array_lengths_consistent(tmp_path: Path) -> None:
     """timestamps, strikes, weighted_flows must all have the same length."""
     rows = [
-        {"contract_type": "CALL", "strike": "4950", "bid": "10", "ask": "12", "last": "11.5", "last_size": "5"},
-        {"contract_type": "CALL", "strike": "5000", "bid": "10", "ask": "12", "last": "10.5", "last_size": "3"},
-        {"contract_type": "CALL", "strike": "5050", "bid": "10", "ask": "12", "last": "11.0", "last_size": "7"},
+        {
+            "contract_type": "CALL",
+            "strike": "4950",
+            "bid": "10",
+            "ask": "12",
+            "last": "11.5",
+            "last_size": "5",
+        },
+        {
+            "contract_type": "CALL",
+            "strike": "5000",
+            "bid": "10",
+            "ask": "12",
+            "last": "10.5",
+            "last_size": "3",
+        },
+        {
+            "contract_type": "CALL",
+            "strike": "5050",
+            "bid": "10",
+            "ask": "12",
+            "last": "11.0",
+            "last_size": "7",
+        },
     ]
     snap = _make_snapshot(tmp_path, datetime(2026, 4, 28, 14, 0, 0), rows)
     timestamps, strikes, flows, bucket_times, bucket_prices = compute_maker_taker_flow(

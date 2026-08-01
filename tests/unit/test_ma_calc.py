@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-
-from trade_dash.calc.ma import sma, validate_windows
+from options_monitor.calc.ma import sma, validate_windows
 
 
 def test_sma_basic() -> None:

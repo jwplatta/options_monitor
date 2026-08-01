@@ -8,7 +8,7 @@ Adds a "Maker-Taker" subtab to the Gamma Map tab to visualize aggressive option 
 
 ## Files to Create
 
-### `src/trade_dash/calc/maker_taker.py`
+### `src/options_monitor/calc/maker_taker.py`
 
 ```python
 def compute_maker_taker_flow(
@@ -42,7 +42,7 @@ Edge cases:
 - Missing `last` column → `dropna` produces empty → return 5 empty lists
 - Empty snapshots → return 5 empty lists immediately
 
-### `src/trade_dash/charts/maker_taker_bubble.py`
+### `src/options_monitor/charts/maker_taker_bubble.py`
 
 ```python
 _COLORSCALE = [
@@ -100,7 +100,7 @@ Key tests:
 
 ## Files to Modify
 
-### `src/trade_dash/data/options.py`
+### `src/options_monitor/data/options.py`
 
 Add to `_OPTIONS_DTYPES` dict (lines 14–27):
 ```python
@@ -109,7 +109,7 @@ Add to `_OPTIONS_DTYPES` dict (lines 14–27):
 ```
 Safe: pandas silently skips dtype entries for columns not present in a CSV, so old files won't break.
 
-### `src/trade_dash/tabs/gamma_map.py`
+### `src/options_monitor/tabs/gamma_map.py`
 
 **Line 114** — extend `st.tabs` call:
 ```python
@@ -120,8 +120,8 @@ tab_gex, tab_chains, tab_history, tab_intraday, tab_gamma_heatmap, tab_maker_tak
 
 **Add imports** (top of file):
 ```python
-from trade_dash.calc.maker_taker import compute_maker_taker_flow
-from trade_dash.charts.maker_taker_bubble import build_maker_taker_bubble_chart
+from options_monitor.calc.maker_taker import compute_maker_taker_flow
+from options_monitor.charts.maker_taker_bubble import build_maker_taker_bubble_chart
 ```
 
 **Add `with tab_maker_taker:` block** after the `with tab_gamma_heatmap:` block (before `_render()` call):
@@ -153,11 +153,11 @@ uv run pytest tests/unit/
 uv run pytest tests/unit/test_options_loader.py -v
 
 # Lint and type-check new modules
-uv run ruff check src/trade_dash/calc/maker_taker.py src/trade_dash/charts/maker_taker_bubble.py
-uv run mypy src/trade_dash/calc/maker_taker.py src/trade_dash/charts/maker_taker_bubble.py
+uv run ruff check src/options_monitor/calc/maker_taker.py src/options_monitor/charts/maker_taker_bubble.py
+uv run mypy src/options_monitor/calc/maker_taker.py src/options_monitor/charts/maker_taker_bubble.py
 
 # Run the app and navigate to Gamma Map → Maker-Taker tab
-uv run streamlit run src/trade_dash/app.py
+uv run streamlit run src/options_monitor/app.py
 ```
 
 End-to-end validation:

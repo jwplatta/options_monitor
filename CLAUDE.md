@@ -6,7 +6,7 @@ Streamlit options-data and market-monitoring dashboard. Data is sourced from tic
 
 ```bash
 # Run the app
-uv run streamlit run src/trade_dash/app.py
+uv run streamlit run src/options_monitor/app.py
 
 # Tests
 uv run pytest tests/unit/          # unit tests only (fast)
@@ -23,7 +23,7 @@ uv run mypy src
 ## Architecture
 
 ```
-src/trade_dash/
+src/options_monitor/
   app.py              # Streamlit entry point
   config.py           # Env-var-backed data paths
   tabs/               # One file per top-level tab (gamma_map, vol, regime, summary)
@@ -38,9 +38,9 @@ Each tab owns its Streamlit widgets and session-state caching. Calc and chart la
 
 | Env var | Default |
 |---|---|
-| `TRADE_DASH_OPTIONS_DIR` | `~/.tickrake/data/options/schwab/` |
-| `TRADE_DASH_CANDLE_DIR` | `~/.tickrake/data/history/ibkr-paper/` |
-| `TRADE_DASH_SCHWAB_CANDLE_DIR` | `~/.tickrake/data/history/schwab/` |
+| `options_monitor_OPTIONS_DIR` | `~/.tickrake/data/options/schwab/` |
+| `options_monitor_CANDLE_DIR` | `~/.tickrake/data/history/ibkr-paper/` |
+| `options_monitor_SCHWAB_CANDLE_DIR` | `~/.tickrake/data/history/schwab/` |
 
 ## Skills
 

@@ -92,7 +92,7 @@ is always today → pure CSV. No interleaving required.
 
 ```python
 PARQUET_OPTIONS_DIR: Path = Path(
-    os.getenv("TRADE_DASH_PARQUET_OPTIONS_DIR", str(_TICKRAKE / "options" / "schwab"))
+    os.getenv("options_monitor_PARQUET_OPTIONS_DIR", str(_TICKRAKE / "options" / "schwab"))
 )
 ```
 

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-
-from trade_dash import app
-from trade_dash.tabs import gex as gamma_map, history
+from options_monitor import app
+from options_monitor.tabs import gex as gamma_map
+from options_monitor.tabs import history
 
 
 def test_dashboard_router_only_invokes_selected_panel(monkeypatch) -> None:
@@ -209,9 +209,7 @@ def test_gex_view_does_not_touch_history_snapshot_loader(monkeypatch, tmp_path: 
         lambda *args, **kwargs: history_loader_called.append("load_historical") or sample_df,
     )
     monkeypatch.setattr(gamma_map, "net_gex_by_strike", lambda df, spot, strike_range: sample_df)
-    monkeypatch.setattr(
-        gamma_map, "net_gex_by_price", lambda df, spot, price_range: sample_df
-    )
+    monkeypatch.setattr(gamma_map, "net_gex_by_price", lambda df, spot, price_range: sample_df)
     monkeypatch.setattr(gamma_map, "find_raw_wall_strikes", lambda *a, **kw: (None, None))
     monkeypatch.setattr(gamma_map, "find_aggregate_wall_strikes", lambda *a, **kw: (None, None))
     monkeypatch.setattr(gamma_map, "find_decision_zones", lambda *a, **kw: ([], []))
@@ -323,7 +321,6 @@ def test_history_view_warns_when_selected_date_has_no_snapshots(
     )
 
     assert warnings
-
 
 
 def test_render_gex_tab_limits_symbol_options(monkeypatch, tmp_path: Path) -> None:

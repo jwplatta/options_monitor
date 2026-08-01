@@ -7,16 +7,15 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import pytest
-
-from trade_dash.calc.gex import (
-    find_decision_zones,
+from options_monitor.calc.gex import (
     find_aggregate_wall_strikes,
+    find_decision_zones,
     find_top_aggregate_gamma_strikes,
     find_zero_gamma_level,
     net_gex_by_price,
     net_gex_by_strike,
 )
-from trade_dash.data.options import find_latest_snapshots, load_options_snapshot
+from options_monitor.data.options import find_latest_snapshots, load_options_snapshot
 
 
 @pytest.fixture()

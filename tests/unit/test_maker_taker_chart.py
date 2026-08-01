@@ -6,13 +6,10 @@ from datetime import datetime
 
 import plotly.graph_objects as go
 import pytest
+from options_monitor.charts.maker_taker_bubble import build_maker_taker_bubble_chart
 
-from trade_dash.charts.maker_taker_bubble import build_maker_taker_bubble_chart
 
-
-def _sample_data() -> tuple[
-    list[datetime], list[float], list[float], list[datetime], list[float]
-]:
+def _sample_data() -> tuple[list[datetime], list[float], list[float], list[datetime], list[float]]:
     timestamps = [datetime(2026, 4, 28, 9, 30), datetime(2026, 4, 28, 9, 30)]
     strikes = [5000.0, 5050.0]
     flows = [25.0, -15.0]

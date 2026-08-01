@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-
-from trade_dash.data.options import (
+from options_monitor.data.options import (
     _parse_filename,
     find_all_snapshots_for_expiry,
     find_historical_snapshot_times,
@@ -722,7 +721,9 @@ def test_load_historical_lookback_interval_filtering() -> None:
     bucket = (ts_ms // (30 * 60 * 1_000)).rename("bucket")
     df_check = df[["expiration_date", "strike", "contract_type"]].copy()
     df_check["bucket"] = bucket.values
-    assert df_check.groupby(["bucket", "expiration_date", "strike", "contract_type"]).size().max() == 1
+    assert (
+        df_check.groupby(["bucket", "expiration_date", "strike", "contract_type"]).size().max() == 1
+    )
 
 
 def test_load_historical_expiry_lookback_single_expiry_across_dates() -> None:

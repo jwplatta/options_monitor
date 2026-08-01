@@ -6,9 +6,8 @@ from datetime import date
 
 import pandas as pd
 import pytest
-
-from trade_dash.calc.vol import expected_move, iv_rv_spread, realized_vol, vix_spx_correlation
-from trade_dash.data.candles import load_candles
+from options_monitor.calc.vol import expected_move, iv_rv_spread, realized_vol, vix_spx_correlation
+from options_monitor.data.candles import load_candles
 
 
 def test_realized_vol_shape_and_sanity() -> None:

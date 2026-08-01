@@ -27,7 +27,7 @@ uv run ruff check .
 uv run ruff format .
 uv run mypy
 uv run pytest
-uv run streamlit run src/trade_dash/app.py
+uv run streamlit run src/options_monitor/app.py
 ```
 
 ## Structure
@@ -36,6 +36,6 @@ uv run streamlit run src/trade_dash/app.py
 .
 ├── .vscode/
 ├── docs/
-├── src/trade_dash/
+├── src/options_monitor/
 └── tests/
 ```

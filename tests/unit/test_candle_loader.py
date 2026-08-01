@@ -6,8 +6,7 @@ from datetime import date, datetime
 
 import pandas as pd
 import pytest
-
-from trade_dash.data.candles import list_available_dates, load_candles
+from options_monitor.data.candles import list_available_dates, load_candles
 
 
 def test_load_candles_returns_expected_columns() -> None:

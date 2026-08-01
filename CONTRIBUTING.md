@@ -38,12 +38,12 @@ uv run pytest
 If your change affects the dashboard UI, also run the app locally:
 
 ```bash
-uv run streamlit run src/trade_dash/app.py
+uv run streamlit run src/options_monitor/app.py
 ```
 
 ## Project boundaries
 
-- Keep production code under `src/trade_dash/`.
+- Keep production code under `src/options_monitor/`.
 - Keep automated tests under `tests/`.
 - Prefer small, composable calculation and chart modules over large mixed-responsibility files.
 - Document user-visible dashboard behavior or workflow changes in `README.md` when needed.

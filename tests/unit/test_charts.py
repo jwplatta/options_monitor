@@ -8,15 +8,14 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import pytest
-
-from trade_dash.charts.gex_aggregate import build_gex_aggregate_chart
-from trade_dash.charts.gex_single import build_gex_single_expiry_chart
-from trade_dash.charts.price import build_sma_price_chart
-from trade_dash.charts.vix_term import build_vix_term_chart
-from trade_dash.charts.vol_spread import build_iv_rv_chart
-from trade_dash.charts.volume import build_sma_volume_chart
-from trade_dash.data.candles import load_candles
-from trade_dash.data.options import find_latest_snapshots, load_options_snapshot
+from options_monitor.charts.gex_aggregate import build_gex_aggregate_chart
+from options_monitor.charts.gex_single import build_gex_single_expiry_chart
+from options_monitor.charts.price import build_sma_price_chart
+from options_monitor.charts.vix_term import build_vix_term_chart
+from options_monitor.charts.vol_spread import build_iv_rv_chart
+from options_monitor.charts.volume import build_sma_volume_chart
+from options_monitor.data.candles import load_candles
+from options_monitor.data.options import find_latest_snapshots, load_options_snapshot
 
 
 @pytest.fixture()
@@ -74,7 +73,7 @@ def test_build_vix_term_chart_without_vix1d() -> None:
 
 
 def test_build_gex_aggregate_chart_returns_figure(spxw_opts: pd.DataFrame) -> None:
-    from trade_dash.calc.gex import net_gex_by_price, net_gex_by_strike
+    from options_monitor.calc.gex import net_gex_by_price, net_gex_by_strike
 
     spot = float(spxw_opts["underlying_price"].iloc[0])
     snap = pd.Timestamp("2026-04-14 14:00:00")
